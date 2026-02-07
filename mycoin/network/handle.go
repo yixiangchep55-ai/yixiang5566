@@ -516,43 +516,60 @@ func (h *Handler) handleGetHeaders(peer *Peer, msg *Message) {
 		return
 	}
 
-	// ---- 找共同祖先 ----
+	// ---- 1. 找共同祖先 (修正版) ----
 	var start *node.BlockIndex
+
 	for _, locator := range req.Locators {
 		if bi, ok := h.Node.Blocks[locator]; ok {
-			start = bi
-			break
+			// 🔥🔥🔥 关键修正：必须检查这个区块是否在我的「主链」上！
+			// 如果只是数据库里有（比如侧链），但不是主链，必须忽略！
+			// 这样才能迫使主机继续往回找，直到找到真正的分叉点。
+			if h.Node.IsOnMainChain(bi) {
+				start = bi
+				break
+			}
 		}
 	}
 
-	// 若找不到 → 从 genesis 开始
+	// 若找不到符合主链的 block → 从 genesis 开始
 	if start == nil {
-		genesisHash := hex.EncodeToString(h.Node.Chain[0].Hash)
-		start = h.Node.Blocks[genesisHash]
+		// 安全检查：防止 Chain 为空
+		if len(h.Node.Chain) > 0 {
+			genesisHash := hex.EncodeToString(h.Node.Chain[0].Hash)
+			start = h.Node.Blocks[genesisHash]
+		}
 	}
 
-	// ---- 向前返回最多 2000 headers ----
+	// 如果还是 nil (极少见)，直接返回
+	if start == nil {
+		return
+	}
+
+	// ---- 2. 向前返回最多 2000 headers ----
 	const MaxHeaders = 2000
 	headers := []HeaderDTO{}
 
 	cur := start
 
 	for len(headers) < MaxHeaders {
-		if len(cur.Children) == 0 {
-			break
-		}
+		// 这里的逻辑也要改：我们既然已经锁定了主链，就应该只沿着主链往下走
+		// 不要去遍历 Children 找最大工作量，直接找那个「在主链上」的儿子
 
-		// 默认走最高工作量的分支（避免走到孤链）
-		next := cur.Children[0]
-
+		var next *node.BlockIndex
 		for _, child := range cur.Children {
-			if child.CumWorkInt.Cmp(next.CumWorkInt) > 0 {
+			// 🔥 只选主链上的子节点
+			if h.Node.IsOnMainChain(child) {
 				next = child
+				break
 			}
 		}
 
-		cur = next
+		// 如果找不到主链的下一步（已经到了 Tip），就停止
+		if next == nil {
+			break
+		}
 
+		cur = next
 		headers = append(headers, BlockIndexToHeaderDTO(cur))
 	}
 

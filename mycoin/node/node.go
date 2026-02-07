@@ -762,3 +762,18 @@ func (n *Node) addTxsToMempool(txs []blockchain.Transaction) {
 		}
 	}
 }
+
+func (n *Node) IsOnMainChain(bi *BlockIndex) bool {
+	// 1. 高度超过主链长度，肯定不是
+	if bi.Height >= uint64(len(n.Chain)) {
+		return false
+	}
+
+	// 2. 取出主链该高度的区块
+	mainBlock := n.Chain[bi.Height]
+	mainHashHex := hex.EncodeToString(mainBlock.Hash)
+
+	// 3. 比较 Hash 是否一致
+	// 如果高度相同但 Hash 不同，说明 bi 是侧链区块
+	return mainHashHex == bi.Hash
+}

@@ -9,7 +9,7 @@ import (
 // 這裡定義你的難度參數
 const (
 	DifficultyInterval = 10
-	TargetSpacing      = 10 // seconds (注意：我改回 10 秒方便測試，你原本寫 1 秒也可以)
+	TargetSpacing      = 30 // seconds (注意：我改回 10 秒方便測試，你原本寫 1 秒也可以)
 	IntervalTimespan   = DifficultyInterval * TargetSpacing
 )
 
@@ -68,7 +68,7 @@ func (n *Node) retargetDifficulty(last *BlockIndex) *big.Int {
 		newTarget.Set(n.Target)
 	}
 
-	fmt.Printf("⏱ Difficulty retarget:\n actualTimespan = %d\n old = %x\n new = %x\n",
+	fmt.Printf("⏱ Difficulty retarget:\n actualTimespan = %d\n old = %s\n new = %s\n",
 		actualTimespan, utils.FormatTargetHex(oldTarget), utils.FormatTargetHex(newTarget),
 	)
 
