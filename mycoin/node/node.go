@@ -218,52 +218,50 @@ func (n *Node) AddBlock(block *blockchain.Block) bool {
 	hashHex := hex.EncodeToString(block.Hash)
 	prevHex := hex.EncodeToString(block.PrevHash)
 
-	// A. 检查是否已存在
+	// A. 检查是否已存在 (這部分保持不變)
 	if bi, exists := n.Blocks[hashHex]; exists {
-		// 如果我們已經有了 Header (FastSync)，但還沒有 Body
 		if bi.Block == nil {
 			fmt.Printf("📥 收到區塊體，補齊資料: 高度 %d\n", bi.Height)
-			bi.Block = block // ✅ 直接補上資料
-
-			// 重要：補齊後不要 return，讓程式往下跑去執行 connectBlock
-			// 這樣才能觸發「更新 Tip」或「重組鏈」的邏輯
+			bi.Block = block
 		} else {
-			return false // 已經有完整區塊，重複了，忽略
+			return false
 		}
 	} else {
 		// B. 如果連索引都沒有，建立新索引
-		// ❌ 錯誤寫法: &node.BlockIndex{...}
-		// ✅ 正確寫法: &BlockIndex{...} (因為我們就在 node package 裡)
+
+		// 1. 計算工作量
+		cumWork := WorkFromTarget(block.Target)
 
 		newBi := &BlockIndex{
 			Hash:     hashHex,
 			PrevHash: prevHex,
 			Height:   block.Height,
-			Block:    block, // 這裡填入完整區塊
-			// 假設 WorkFromTarget 是 node package 裡的 helper 函數，直接用
-			CumWorkInt: WorkFromTarget(block.Target),
+			Block:    block,
+
+			// 🔥🔥🔥 關鍵修正：必須把時間戳存入索引 🔥🔥🔥
+			Timestamp: block.Timestamp,
+
+			// 建議也把 Bits (Target壓縮版) 存入，如果你的 BlockIndex 結構有加的話
+			// Bits: block.Bits,
+
+			CumWorkInt: cumWork,
+			Children:   []*BlockIndex{},
 		}
 
-		// 這裡也要把字串版的 CumWork 填上，方便之後比較或顯示
+		// 補上字串版工作量
 		newBi.CumWork = newBi.CumWorkInt.String()
 
 		n.Blocks[hashHex] = newBi
 	}
 
-	// B. 检查父区块是否存在
+	// ... (後面的父區塊檢查與 connectBlock 保持不變) ...
 	parent, parentExists := n.Blocks[prevHex]
 
-	// 如果父区块完全不存在，或者只有 Header 没有 Body（根据你的验证需求决定）
 	if !parentExists {
 		log.Printf("📦 发现孤块 (缺少父块 %s): %s\n", prevHex, hashHex)
 		n.Orphans[prevHex] = append(n.Orphans[prevHex], block)
 		return false
 	}
-
-	// C. 此时我们有父区块的索引，尝试连接
-	// 注意：如果 parent.Block 为 nil (FastSync 只有头)，
-	// 你需要根据你的共识策略决定是“先下父块”还是“暂时挂起”。
-	// 这里假设父块至少得有 Header 才能验证 PoW 连接。
 
 	return n.connectBlock(block, parent)
 }
