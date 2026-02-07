@@ -566,31 +566,35 @@ func (h *Handler) handleGetHeaders(peer *Peer, msg *Message) {
 func (h *Handler) handleHeaders(peer *Peer, msg *Message) {
 	var payload HeadersPayload
 	if err := decode(msg.Data, &payload); err != nil {
+		log.Println("decode headers error:", err)
 		return
 	}
 
-	// ---- 初始化 IBD 状态 ----
-	if h.Node.SyncState == node.SyncIdle {
-		h.Node.SyncState = node.SyncIBD
-		h.Node.IsSyncing = true
-		log.Println("🔄 Enter IBD")
-	}
+	headersCount := len(payload.Headers)
+	fmt.Printf("📥 Received %d headers from peer\n", headersCount)
 
-	// ---- sanity check ----
-	if len(payload.Headers) > 2000 {
-		log.Println("⚠️ too many headers")
+	// ---------------------------------------------------------
+	// 1️⃣ 修正點：只有當收到 0 個時，才認定 Header 同步完成
+	// ---------------------------------------------------------
+	if headersCount == 0 {
+		fmt.Println("✅ Headers fully synced (Peer sent 0 headers)")
+		h.Node.HeadersSynced = true
+
+		// 開始下載區塊體
+		h.requestMissingBlockBodies(peer)
 		return
 	}
 
-	// ---- 处理每个 header ----
+	// ---------------------------------------------------------
+	// 2️⃣ 處理 Header (保持你不變的邏輯)
+	// ---------------------------------------------------------
 	for _, hdr := range payload.Headers {
-
-		// 已有 header 则跳过
+		// 已有 header 則跳過
 		if _, ok := h.Node.Blocks[hdr.Hash]; ok {
 			continue
 		}
 
-		// 构造 BlockIndex（header-only）
+		// 構造 BlockIndex（header-only）
 		bi := &node.BlockIndex{
 			Hash:     hdr.Hash,
 			PrevHash: hdr.PrevHash,
@@ -598,7 +602,7 @@ func (h *Handler) handleHeaders(peer *Peer, msg *Message) {
 			CumWork:  hdr.CumWork,
 		}
 
-		// ⭐ 必须补：解析 CumWorkInt（重要）
+		// 解析 CumWorkInt
 		bi.CumWorkInt = new(big.Int)
 		if hdr.CumWork != "" {
 			bi.CumWorkInt.SetString(hdr.CumWork, 10)
@@ -606,21 +610,22 @@ func (h *Handler) handleHeaders(peer *Peer, msg *Message) {
 			bi.CumWorkInt.SetInt64(0)
 		}
 
-		// 保存 header-only（block body 尚未下载）
+		// 保存 header-only
 		h.Node.Blocks[hdr.Hash] = bi
 
-		// 设置父区块
+		// 設置父区块 / 更新 Children
 		if parent, ok := h.Node.Blocks[hdr.PrevHash]; ok {
 			bi.Parent = parent
 			parent.Children = append(parent.Children, bi)
 		}
 
-		// 更新最佳链头
+		// 更新最佳链头 (Best)
+		// 注意：這裡只更新指針，真正的 Chain 切換在 Body 下載完後
 		if h.Node.Best == nil || bi.CumWorkInt.Cmp(h.Node.Best.CumWorkInt) > 0 {
 			h.Node.Best = bi
 		}
 
-		// ⭐ 如果 orphan 等待这个 header，立即处理
+		// 處理孤塊
 		if orphans, ok := h.Node.Orphans[hdr.Hash]; ok {
 			for _, orphan := range orphans {
 				h.handleBlock(peer, &Message{
@@ -632,14 +637,20 @@ func (h *Handler) handleHeaders(peer *Peer, msg *Message) {
 		}
 	}
 
-	// ---- 如果没有更多 headers，说明 header 同步完成 ----
-	if len(payload.Headers) < 2000 {
-		log.Println("📥 Headers fully synced")
-		h.Node.HeadersSynced = true
+	// ---------------------------------------------------------
+	// 3️⃣ 修正點：只要還有收到數據，就繼續索取更多！
+	// ---------------------------------------------------------
+	// 不要依賴 < 2000 的判斷，直接再發一次 GetHeaders
+	// 這樣可以確保連最後一丁點數據都拿到了
+	fmt.Println("🔄 Requesting MORE headers...")
 
-		// ⭐ 开始下载 block bodies（必须）
-		h.requestMissingBlockBodies(peer)
-	}
+	peer.Send(Message{
+		Type: MsgGetHeaders,
+		Data: GetHeadersPayload{
+			// 因為剛剛加入了新的 Header，buildBlockLocator 會包含最新的 Hash
+			Locators: h.buildBlockLocator(),
+		},
+	})
 }
 
 func (h *Handler) requestMissingBlockBodies(peer *Peer) {
