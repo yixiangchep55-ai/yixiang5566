@@ -658,10 +658,9 @@ func (h *Handler) requestMissingBlockBodies(peer *Peer) {
 	var target *node.BlockIndex
 
 	// 1. 往回走，直到找到「最靠近創世塊」的那個缺口
-	// 這樣可以確保 VM 是按順序（1, 2, 3...）把區塊補齊的
 	for bi != nil && bi.Height > 0 {
 		if bi.Block == nil {
-			target = bi // 暫存這個缺口，繼續往回找看有沒有更早的
+			target = bi
 		}
 		bi = bi.Parent
 	}
@@ -673,14 +672,10 @@ func (h *Handler) requestMissingBlockBodies(peer *Peer) {
 		return
 	}
 
-	// 3. ⭐ 重要修改：如果走到這，代表所有區塊內容 (Bodies) 都已經補齊了
-	// 我們不再只是改 SyncState，而是呼叫 finishSyncing 執行完整的「鏈重組」與「礦工刷新」邏輯
-	if h.Node.IsSyncing {
-		h.finishSyncing()
-	} else {
-		// 如果不是在 IBD 狀態，但剛好補完洞，也確保狀態是同步的
-		h.Node.BodiesSynced = true
-	}
+	// 3. ⭐ 關鍵修正：刪除所有 if 判斷，直接強制完成同步
+	// 無論之前狀態為何，只要確認無缺塊，就觸發同步完成 -> 喚醒礦工
+	fmt.Println("✅ 所有區塊內容已齊全，觸發同步完成...")
+	h.finishSyncing()
 }
 
 func (h *Handler) requestBlock(peer *Peer, hash string) {
