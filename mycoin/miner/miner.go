@@ -2,6 +2,7 @@ package miner
 
 import (
 	"bytes"
+	"encoding/hex"
 	"fmt"
 	"math/big"
 	"mycoin/blockchain"
@@ -49,36 +50,29 @@ func NewMiner(addr string, n MinerNode) *Miner {
 func (m *Miner) Start() {
 	go func() {
 		for {
-			// 1. 同步狀態檢查（做得很好！）
-			if !m.Node.IsSynced() {
-				time.Sleep(1 * time.Second)
-				continue
-			}
+			// ... (前面的檢查 IsSynced, GetBestBlock 保持不變) ...
 
-			prev := m.Node.GetBestBlock()
-			if prev == nil {
-				time.Sleep(200 * time.Millisecond)
-				continue
-			}
+			// 顯示挖礦日誌
+			// fmt.Printf("⛏️ Mining block %d...\n", prev.Height+1)
 
-			// 2. 開始挖礦
-			// 建議：傳入當前高度，讓 Mine 內部能感知鏈的變化
 			block := m.Mine(true)
-			if block == nil {
-				continue
-			}
 
-			// 3. 提交區塊給 Node
-			// 讓 Node 內部去判斷是否要廣播
-			if err := m.Node.AddBlockInterface(block); err != nil {
-				fmt.Printf("⛏️ 挖出的區塊 %d 提交失敗: %v\n", block.Height, err)
+			if block != nil {
+				// 提交區塊
+				if err := m.Node.AddBlockInterface(block); err == nil {
+					fmt.Printf("🍺 成功挖掘並提交區塊: 高度 %d\n", block.Height)
+
+					// ---------------------------------------------------------
+					// 🔴 關鍵修正：挖到塊後，必須主動廣播給全世界！
+					// ---------------------------------------------------------
+					hashHex := hex.EncodeToString(block.Hash)
+
+					// 呼叫 Node 的廣播接口
+					m.Node.BroadcastBlockHash(hashHex)
+				}
 			} else {
-				// ✅ 這裡不需要寫 Broadcast，交給 Node 的 AddBlock 邏輯統一處理
-				fmt.Printf("🍺 成功挖掘並提交區塊: 高度 %d\n", block.Height)
+				time.Sleep(100 * time.Millisecond)
 			}
-
-			// 稍微喘息，避免 CPU 緊繃
-			time.Sleep(100 * time.Millisecond)
 		}
 	}()
 }
