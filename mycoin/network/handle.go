@@ -516,56 +516,64 @@ func (h *Handler) handleGetHeaders(peer *Peer, msg *Message) {
 		return
 	}
 
-	// ---- 1. 找共同祖先 (修正版) ----
+	fmt.Printf("🔍 [Debug] 收到 GetHeaders 請求，Locator 數量: %d\n", len(req.Locators))
+
+	// ---- 找共同祖先 ----
 	var start *node.BlockIndex
 
-	for _, locator := range req.Locators {
+	for i, locator := range req.Locators {
 		if bi, ok := h.Node.Blocks[locator]; ok {
-			// 🔥🔥🔥 关键修正：必须检查这个区块是否在我的「主链」上！
-			// 如果只是数据库里有（比如侧链），但不是主链，必须忽略！
-			// 这样才能迫使主机继续往回找，直到找到真正的分叉点。
-			if h.Node.IsOnMainChain(bi) {
+			// 偵錯日誌：看看主機對這個 Hash 的看法
+			onMain := h.Node.IsOnMainChain(bi)
+			fmt.Printf("   👉 檢查 Locator[%d]: 高度 %d, Hash %s... -> DB存在:是, 主鏈:%v\n",
+				i, bi.Height, locator[:6], onMain)
+
+			if onMain {
 				start = bi
+				fmt.Printf("   ✅ 鎖定共同祖先: 高度 %d\n", start.Height)
 				break
 			}
+		} else {
+			// fmt.Printf("   👉 檢查 Locator[%d]: Hash %s... -> DB存在:否\n", i, locator[:6])
 		}
 	}
 
-	// 若找不到符合主链的 block → 从 genesis 开始
+	// 若找不到 → 從 genesis 開始
 	if start == nil {
-		// 安全检查：防止 Chain 为空
 		if len(h.Node.Chain) > 0 {
 			genesisHash := hex.EncodeToString(h.Node.Chain[0].Hash)
 			start = h.Node.Blocks[genesisHash]
+			fmt.Println("   ⚠️ 沒找到 Locator 對應的主鏈塊，回退到 Genesis")
 		}
 	}
 
-	// 如果还是 nil (极少见)，直接返回
 	if start == nil {
+		fmt.Println("   ❌ 嚴重錯誤: 連 Genesis 都找不到 (資料庫不一致?)")
 		return
 	}
 
-	// ---- 2. 向前返回最多 2000 headers ----
+	// ---- 向前返回最多 2000 headers ----
 	const MaxHeaders = 2000
 	headers := []HeaderDTO{}
 
 	cur := start
 
-	for len(headers) < MaxHeaders {
-		// 这里的逻辑也要改：我们既然已经锁定了主链，就应该只沿着主链往下走
-		// 不要去遍历 Children 找最大工作量，直接找那个「在主链上」的儿子
+	// 偵錯：從哪裡開始找
+	// fmt.Printf("   🚀 開始從高度 %d 往後搜尋主鏈子區塊...\n", cur.Height)
 
+	for len(headers) < MaxHeaders {
 		var next *node.BlockIndex
+
+		// 遍歷子節點，尋找主鏈上的那一個
 		for _, child := range cur.Children {
-			// 🔥 只选主链上的子节点
 			if h.Node.IsOnMainChain(child) {
 				next = child
 				break
 			}
 		}
 
-		// 如果找不到主链的下一步（已经到了 Tip），就停止
 		if next == nil {
+			// fmt.Printf("   🛑 搜尋停止: 高度 %d 沒有主鏈子節點 (可能是最新 Tip)\n", cur.Height)
 			break
 		}
 
@@ -573,7 +581,9 @@ func (h *Handler) handleGetHeaders(peer *Peer, msg *Message) {
 		headers = append(headers, BlockIndexToHeaderDTO(cur))
 	}
 
-	// ---- 发送 Headers ----
+	fmt.Printf("📤 [Debug] 準備回傳 %d 個 Headers 給對方\n", len(headers))
+
+	// ---- 發送 Headers ----
 	peer.Send(Message{
 		Type: MsgHeaders,
 		Data: HeadersPayload{Headers: headers},
@@ -659,15 +669,15 @@ func (h *Handler) handleHeaders(peer *Peer, msg *Message) {
 	// ---------------------------------------------------------
 	// 不要依賴 < 2000 的判斷，直接再發一次 GetHeaders
 	// 這樣可以確保連最後一丁點數據都拿到了
-	fmt.Println("🔄 Requesting MORE headers...")
-
-	peer.Send(Message{
-		Type: MsgGetHeaders,
-		Data: GetHeadersPayload{
-			// 因為剛剛加入了新的 Header，buildBlockLocator 會包含最新的 Hash
-			Locators: h.buildBlockLocator(),
-		},
-	})
+	if headersCount > 0 {
+		fmt.Println("🔄 收到 Header，繼續索取更多...")
+		peer.Send(Message{
+			Type: MsgGetHeaders,
+			Data: GetHeadersPayload{
+				Locators: h.buildBlockLocator(),
+			},
+		})
+	}
 }
 
 func (h *Handler) requestMissingBlockBodies(peer *Peer) {
