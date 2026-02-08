@@ -6,6 +6,7 @@ import (
 	"net"
 	"os"
 	"path/filepath"
+	"time" // 引入 time 包
 
 	"mycoin/miner"
 	"mycoin/network"
@@ -15,9 +16,9 @@ import (
 	"mycoin/wallet"
 )
 
-// 统一的矿工钱包加载逻辑
+// ... (loadOrCreateMinerWallet 函數保持不變) ...
 func loadOrCreateMinerWallet(path string) *wallet.Wallet {
-	// 文件存在 → 加载
+	// ... (保持原樣) ...
 	if _, err := os.Stat(path); err == nil {
 		w, err := wallet.LoadWallet(path)
 		if err == nil {
@@ -26,22 +27,17 @@ func loadOrCreateMinerWallet(path string) *wallet.Wallet {
 		}
 		fmt.Println("⚠️ 矿工钱包读取失败，重新生成:", err)
 	}
-
-	// 文件不存在 → 生成
 	fmt.Println("矿工钱包不存在，正在生成...")
 	w, _ := wallet.NewWallet()
-
 	if err := wallet.SaveWallet(path, w); err != nil {
 		fmt.Println("❌ 保存矿工钱包失败:", err)
 		os.Exit(1)
 	}
-
 	fmt.Println("⛏ Miner wallet created:", w.Address)
 	return w
 }
 
 func main() {
-	// ⭐ 添加 mode 参数
 	mode := flag.String("mode", "archive", "Node mode: archive or pruned")
 	datadir := flag.String("datadir", "", "Directory for all node data")
 	flag.Parse()
@@ -55,19 +51,17 @@ func main() {
 	}
 
 	os.MkdirAll(*datadir, 0755)
-	dbPath := filepath.Join(*datadir, "chain.db")
+	// dbPath := filepath.Join(*datadir, "chain.db") // unused variable
 	fmt.Println("📁 Using datadir:", *datadir)
-	fmt.Println("📁 DB path:", dbPath)
+
 	// -------------------------------
 	// 1. 创建 Node
 	// -------------------------------
 	nd := node.NewNode(*mode, *datadir)
-
-	// ⭐ 必须先启动 Node（加载 DB / 重建链 / 恢复 Best）
 	nd.Start()
 
 	// -------------------------------
-	// 2. 载入矿工钱包（固定）
+	// 2. 载入矿工钱包
 	// -------------------------------
 	walletPath := filepath.Join(*datadir, "miner.dat")
 	minerWallet := loadOrCreateMinerWallet(walletPath)
@@ -77,34 +71,19 @@ func main() {
 	// -------------------------------
 	nd.MiningAddress = minerWallet.Address
 
-	// -------------------------------
-	// 4. 启动矿工（自动挖矿）
-	// -------------------------------
-	nd.Miner = miner.NewMiner(nd.MiningAddress, nd)
-
-	// ❌ 刪除舊的啟動方式：
-	// nd.Miner.Start()
-
-	// ✅ 使用新的 Node 主控挖礦 (包含廣播邏輯)
-	// 使用 go 關鍵字讓它在背景執行，不要卡住後面的 P2P/RPC 啟動
-	go nd.Mine()
-
-	fmt.Println("⛏ Miner started with address:", nd.MiningAddress)
+	// 🔥🔥🔥 原本在這裡的「啟動礦工」移走了！ 🔥🔥🔥
 
 	// -------------------------------
-	// 5. 启动 P2P
+	// 4. 启动 P2P (先建立網路！)
 	// -------------------------------
 	handler := network.NewHandler(nd)
 	net := network.NewNetwork(handler)
 	handler.Network = net
 	net.Node = nd
 
-	nd.Broadcaster = handler
+	nd.Broadcaster = handler // 這裡綁定廣播器
 
-	// 监听固定地址，不变
 	listenAddr := "0.0.0.0:9001"
-
-	// 广播外网地址给其他 peer
 	publicIP := detectBestIP()
 	handler.LocalVersion = network.VersionPayload{
 		Version: 1,
@@ -114,18 +93,17 @@ func main() {
 	fmt.Println("🔎 Node will advertise itself as:", handler.LocalVersion.NodeID)
 	pm := network.NewPeerManager(net, listenAddr, 16)
 	net.PeerManager = pm
-	pm.Start()
+	pm.Start() // 啟動監聽
+
 	// -------------------------------
-	// 6. 启动 RPC 服务
+	// 5. 启动 RPC 服务
 	// -------------------------------
-	// Full Node RPC
 	nodeRPC := rpc.RPCServer{
 		Node:    nd,
 		Handler: handler,
 	}
 	go nodeRPC.Start(":8081")
 
-	// Wallet RPC（使用同一个矿工钱包）
 	walletRPC := rpcwallet.RPCServer{
 		Node:    nd,
 		Wallet:  minerWallet,
@@ -136,21 +114,34 @@ func main() {
 	fmt.Println("🟢 Full Node + Wallet RPC 已完全启动")
 
 	// -------------------------------
+	// 6. 🔥 最後才启动矿工 (確保網路已就緒)
+	// -------------------------------
+	// 確保 Miner 實例存在
+	nd.Miner = miner.NewMiner(nd.MiningAddress, nd)
+
+	// 給 P2P 一點時間去發現節點 (建議加這行)
+	fmt.Println("⏳ 等待 5 秒讓 P2P 網路建立連線...")
+	time.Sleep(5 * time.Second)
+
+	// 啟動 Node 主控挖礦
+	go nd.Mine()
+
+	fmt.Println("⛏ Miner started (Node-controlled) with address:", nd.MiningAddress)
+
+	// -------------------------------
 	// 7. 阻塞主线程
 	// -------------------------------
 	select {}
 }
 
 func detectBestIP() string {
-	// 尝试检测公网 IP
+	// ... (保持不變) ...
 	conn, err := net.Dial("udp", "8.8.8.8:80")
 	if err == nil {
 		defer conn.Close()
 		local := conn.LocalAddr().(*net.UDPAddr)
 		return local.IP.String()
 	}
-
-	// 尝试检测局域网 IP
 	addrs, err := net.InterfaceAddrs()
 	if err == nil {
 		for _, addr := range addrs {
@@ -163,7 +154,5 @@ func detectBestIP() string {
 			}
 		}
 	}
-
-	// fallback
 	return "127.0.0.1"
 }
