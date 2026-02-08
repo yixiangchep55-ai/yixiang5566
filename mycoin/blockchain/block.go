@@ -163,6 +163,16 @@ func (b *Block) CalcHeader() []byte {
 	// 6. MerkleRoot (variable)
 	buf = append(buf, b.MerkleRoot...)
 
+	if b.Height == 1 {
+		fmt.Println("================== HEADER HEX DUMP ==================")
+		fmt.Printf("Role: ??? (Host or VM)\n")
+		fmt.Printf("Height: %d\n", b.Height)
+		fmt.Printf("Bits:   %d\n", b.Bits)
+		fmt.Printf("Merkle: %x\n", b.MerkleRoot)
+		fmt.Printf("HEADER: %x\n", buf) // 👈 這是關鍵！
+		fmt.Println("=====================================================")
+	}
+
 	return buf
 }
 

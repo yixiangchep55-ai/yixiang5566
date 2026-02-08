@@ -17,6 +17,8 @@ func BlockToDTO(b *blockchain.Block, bi *node.BlockIndex) BlockDTO {
 		Timestamp: b.Timestamp,
 		Nonce:     b.Nonce,
 
+		MerkleRoot: hex.EncodeToString(b.MerkleRoot),
+
 		// 🔥🔥🔥 關鍵修正：必須傳輸 Bits！ 🔥🔥🔥
 		Bits: b.Bits,
 
@@ -37,6 +39,7 @@ func DTOToBlock(d BlockDTO) *blockchain.Block {
 	// 2. 解碼 Hash
 	prevHashBytes, _ := hex.DecodeString(d.PrevHash)
 	hashBytes, _ := hex.DecodeString(d.Hash)
+	merkleBytes, _ := hex.DecodeString(d.MerkleRoot)
 
 	// 3. 🔥🔥 關鍵修正：從 Bits 還原 Target (共識規則) 🔥🔥
 	// 我們更信任 Bits，因為它是參與 Hash 計算的源頭
@@ -56,6 +59,8 @@ func DTOToBlock(d BlockDTO) *blockchain.Block {
 
 		// 使用還原後的 Target
 		Target: target,
+
+		MerkleRoot: merkleBytes,
 
 		Transactions: TxListFromDTO(d.Transactions),
 		Miner:        d.Miner,
