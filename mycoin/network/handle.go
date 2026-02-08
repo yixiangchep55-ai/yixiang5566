@@ -516,74 +516,57 @@ func (h *Handler) handleGetHeaders(peer *Peer, msg *Message) {
 		return
 	}
 
-	fmt.Printf("🔍 [Debug] 收到 GetHeaders 請求，Locator 數量: %d\n", len(req.Locators))
+	// fmt.Printf("🔍 [Debug] 收到 GetHeaders, Locator數: %d\n", len(req.Locators))
 
-	// ---- 找共同祖先 ----
-	var start *node.BlockIndex
+	// ------------------------------------------------------------------
+	// 步驟 1: 尋找共同祖先
+	// ------------------------------------------------------------------
+	var startHeight int64 = -1
 
-	for i, locator := range req.Locators {
-		if bi, ok := h.Node.Blocks[locator]; ok {
-			// 偵錯日誌：看看主機對這個 Hash 的看法
-			onMain := h.Node.IsOnMainChain(bi)
-			fmt.Printf("   👉 檢查 Locator[%d]: 高度 %d, Hash %s... -> DB存在:是, 主鏈:%v\n",
-				i, bi.Height, locator[:6], onMain)
-
-			if onMain {
-				start = bi
-				fmt.Printf("   ✅ 鎖定共同祖先: 高度 %d\n", start.Height)
+	for _, hash := range req.Locators {
+		// 1. 檢查 DB 是否有此塊
+		if bi, exists := h.Node.Blocks[hash]; exists {
+			// 2. 關鍵：只有當這個塊在「主鏈」上時，才認可它
+			if h.Node.IsOnMainChain(bi) {
+				startHeight = int64(bi.Height)
 				break
 			}
-		} else {
-			// fmt.Printf("   👉 檢查 Locator[%d]: Hash %s... -> DB存在:否\n", i, locator[:6])
 		}
 	}
 
-	// 若找不到 → 從 genesis 開始
-	if start == nil {
-		if len(h.Node.Chain) > 0 {
-			genesisHash := hex.EncodeToString(h.Node.Chain[0].Hash)
-			start = h.Node.Blocks[genesisHash]
-			fmt.Println("   ⚠️ 沒找到 Locator 對應的主鏈塊，回退到 Genesis")
-		}
+	// 💡 容錯機制：
+	// 如果對方傳來的 Locator 我們完全找不到（例如 Genesis 不匹配），
+	// 或者是全新的節點 (Locator 為空)，我們就從頭開始發送。
+	if startHeight == -1 {
+		// 這裡可以選擇發送 Genesis，或者什麼都不做
+		// 為了確保同步，我們從 -1 開始 (下一個就是 0)
+		startHeight = -1
 	}
 
-	if start == nil {
-		fmt.Println("   ❌ 嚴重錯誤: 連 Genesis 都找不到 (資料庫不一致?)")
-		return
-	}
-
-	// ---- 向前返回最多 2000 headers ----
+	// ------------------------------------------------------------------
+	// 步驟 2: 線性讀取主鏈 (陣列遍歷)
+	// ------------------------------------------------------------------
+	var headers []HeaderDTO
 	const MaxHeaders = 2000
-	headers := []HeaderDTO{}
 
-	cur := start
+	scanHeight := startHeight + 1
+	chainLen := int64(len(h.Node.Chain))
 
-	// 偵錯：從哪裡開始找
-	// fmt.Printf("   🚀 開始從高度 %d 往後搜尋主鏈子區塊...\n", cur.Height)
+	for scanHeight < chainLen && len(headers) < MaxHeaders {
+		// 直接從陣列拿，絕對不會錯！
+		block := h.Node.Chain[scanHeight]
 
-	for len(headers) < MaxHeaders {
-		var next *node.BlockIndex
-
-		// 遍歷子節點，尋找主鏈上的那一個
-		for _, child := range cur.Children {
-			if h.Node.IsOnMainChain(child) {
-				next = child
-				break
-			}
+		// 轉成 HeaderDTO
+		hashHex := hex.EncodeToString(block.Hash)
+		if bi, ok := h.Node.Blocks[hashHex]; ok {
+			headers = append(headers, BlockIndexToHeaderDTO(bi))
 		}
 
-		if next == nil {
-			// fmt.Printf("   🛑 搜尋停止: 高度 %d 沒有主鏈子節點 (可能是最新 Tip)\n", cur.Height)
-			break
-		}
-
-		cur = next
-		headers = append(headers, BlockIndexToHeaderDTO(cur))
+		scanHeight++
 	}
 
-	fmt.Printf("📤 [Debug] 準備回傳 %d 個 Headers 給對方\n", len(headers))
+	// fmt.Printf("📤 回傳 %d 個 Headers (Height %d -> %d)\n", len(headers), startHeight+1, scanHeight-1)
 
-	// ---- 發送 Headers ----
 	peer.Send(Message{
 		Type: MsgHeaders,
 		Data: HeadersPayload{Headers: headers},
