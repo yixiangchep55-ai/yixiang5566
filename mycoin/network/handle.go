@@ -583,36 +583,30 @@ func (h *Handler) handleHeaders(peer *Peer, msg *Message) {
 	headersCount := len(payload.Headers)
 	fmt.Printf("📥 Received %d headers from peer\n", headersCount)
 
-	// ---------------------------------------------------------
-	// 1️⃣ 修正點：只有當收到 0 個時，才認定 Header 同步完成
-	// ---------------------------------------------------------
+	// 1. 如果對方回傳 0 個，直接結束同步
 	if headersCount == 0 {
 		fmt.Println("✅ Headers fully synced (Peer sent 0 headers)")
 		h.Node.HeadersSynced = true
-
-		// 開始下載區塊體
 		h.requestMissingBlockBodies(peer)
 		return
 	}
 
-	// ---------------------------------------------------------
-	// 2️⃣ 處理 Header (保持你不變的邏輯)
-	// ---------------------------------------------------------
+	// 2. 處理 Header，並統計「新區塊」
+	addedCount := 0 // 🔥 這是關鍵計數器！
+
 	for _, hdr := range payload.Headers {
-		// 已有 header 則跳過
+		// 如果資料庫已經有這個塊了，直接跳過！
 		if _, ok := h.Node.Blocks[hdr.Hash]; ok {
 			continue
 		}
 
-		// 構造 BlockIndex（header-only）
+		// --- 建立 BlockIndex (保持原本邏輯) ---
 		bi := &node.BlockIndex{
 			Hash:     hdr.Hash,
 			PrevHash: hdr.PrevHash,
 			Height:   hdr.Height,
 			CumWork:  hdr.CumWork,
 		}
-
-		// 解析 CumWorkInt
 		bi.CumWorkInt = new(big.Int)
 		if hdr.CumWork != "" {
 			bi.CumWorkInt.SetString(hdr.CumWork, 10)
@@ -620,17 +614,16 @@ func (h *Handler) handleHeaders(peer *Peer, msg *Message) {
 			bi.CumWorkInt.SetInt64(0)
 		}
 
-		// 保存 header-only
+		// 寫入內存
 		h.Node.Blocks[hdr.Hash] = bi
 
-		// 設置父区块 / 更新 Children
+		// 連結父子關係
 		if parent, ok := h.Node.Blocks[hdr.PrevHash]; ok {
 			bi.Parent = parent
 			parent.Children = append(parent.Children, bi)
 		}
 
-		// 更新最佳链头 (Best)
-		// 注意：這裡只更新指針，真正的 Chain 切換在 Body 下載完後
+		// 更新 Best
 		if h.Node.Best == nil || bi.CumWorkInt.Cmp(h.Node.Best.CumWorkInt) > 0 {
 			h.Node.Best = bi
 		}
@@ -638,28 +631,33 @@ func (h *Handler) handleHeaders(peer *Peer, msg *Message) {
 		// 處理孤塊
 		if orphans, ok := h.Node.Orphans[hdr.Hash]; ok {
 			for _, orphan := range orphans {
-				h.handleBlock(peer, &Message{
-					Type: MsgBlock,
-					Data: orphan,
-				})
+				h.handleBlock(peer, &Message{Type: MsgBlock, Data: orphan})
 			}
 			delete(h.Node.Orphans, hdr.Hash)
 		}
+
+		// 🔥 成功加入一個「新」塊，計數器 +1
+		addedCount++
 	}
 
-	// ---------------------------------------------------------
-	// 3️⃣ 修正點：只要還有收到數據，就繼續索取更多！
-	// ---------------------------------------------------------
-	// 不要依賴 < 2000 的判斷，直接再發一次 GetHeaders
-	// 這樣可以確保連最後一丁點數據都拿到了
-	if headersCount > 0 {
-		fmt.Println("🔄 收到 Header，繼續索取更多...")
+	// 3. 🛑 聰明的請求邏輯 (Brake Mechanism)
+	// 只有當我們「真的學到了新東西」時，才繼續要！
+	if addedCount > 0 {
+		fmt.Printf("🔄 收納了 %d 個新 Header (總共 %d)，繼續索取更多...\n", addedCount, headersCount)
+
 		peer.Send(Message{
 			Type: MsgGetHeaders,
 			Data: GetHeadersPayload{
+				// 因為加入了新塊，Locator 會更新，指向更後面的位置
 				Locators: h.buildBlockLocator(),
 			},
 		})
+	} else {
+		// 如果 addedCount == 0，代表對方傳來的 headers 我們全都有了。
+		// 這意味著我們已經跟上對方了，不需要再浪費頻寬一直問。
+		fmt.Println("✅ 收到的 Headers 都是重複的，認定同步完成！")
+		h.Node.HeadersSynced = true
+		h.requestMissingBlockBodies(peer)
 	}
 }
 
