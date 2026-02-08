@@ -81,7 +81,14 @@ func main() {
 	// 4. 启动矿工（自动挖矿）
 	// -------------------------------
 	nd.Miner = miner.NewMiner(nd.MiningAddress, nd)
-	nd.Miner.Start()
+
+	// ❌ 刪除舊的啟動方式：
+	// nd.Miner.Start()
+
+	// ✅ 使用新的 Node 主控挖礦 (包含廣播邏輯)
+	// 使用 go 關鍵字讓它在背景執行，不要卡住後面的 P2P/RPC 啟動
+	go nd.Mine()
+
 	fmt.Println("⛏ Miner started with address:", nd.MiningAddress)
 
 	// -------------------------------

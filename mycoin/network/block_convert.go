@@ -10,20 +10,31 @@ import (
 
 // Block → BlockDTO（发到网络）
 func BlockToDTO(b *blockchain.Block, bi *node.BlockIndex) BlockDTO {
-	return BlockDTO{
-		Height:    b.Height,
-		PrevHash:  hex.EncodeToString(b.PrevHash),
-		Hash:      hex.EncodeToString(b.Hash),
-		Timestamp: b.Timestamp,
-		Nonce:     b.Nonce,
+	// 1. 安全獲取累積工作量
+	// 如果 bi 是 nil (例如剛挖到準備廣播時)，我們就填 "0" 或空字串
+	// 對方節點收到後會自己計算，所以這裡填 0 沒關係
+	cumWork := "0"
+	if bi != nil && bi.CumWorkInt != nil {
+		cumWork = bi.CumWorkInt.Text(16)
+	}
 
+	return BlockDTO{
+		Height:     b.Height,
+		PrevHash:   hex.EncodeToString(b.PrevHash),
+		Hash:       hex.EncodeToString(b.Hash),
+		Timestamp:  b.Timestamp,
+		Nonce:      b.Nonce,
 		MerkleRoot: hex.EncodeToString(b.MerkleRoot),
 
-		// 🔥🔥🔥 關鍵修正：必須傳輸 Bits！ 🔥🔥🔥
+		// 🔥 關鍵修正：必須傳輸 Bits (難度壓縮值)
 		Bits: b.Bits,
 
-		Target:       b.Target.Text(16),
-		CumWork:      bi.CumWorkInt.Text(16),
+		// Target 雖然可以用 Bits 算出來，但傳著方便對方驗證也可以
+		Target: b.Target.Text(16),
+
+		// 使用安全處理過的變數
+		CumWork: cumWork,
+
 		Transactions: TxListToDTO(b.Transactions),
 		Miner:        b.Miner,
 		Reward:       b.Reward,
