@@ -38,8 +38,9 @@ type Node struct {
 	Target *big.Int
 	Reward int
 
-	Miner *miner.Miner
-	DB    *database.BoltDB
+	Miner          *miner.Miner
+	DB             *database.BoltDB
+	MinerResetChan chan bool
 
 	Broadcaster BlockBroadcaster
 
@@ -111,8 +112,9 @@ func NewNode(mode string, datadir string) *Node {
 		Reward:  100,
 		Blocks:  make(map[string]*BlockIndex), // ✓ 修正
 		//	BlockIndex: make(map[string]*blockchain.Block), // ✓ 修正
-		Orphans: make(map[string][]*blockchain.Block),
-		DB:      db,
+		Orphans:        make(map[string][]*blockchain.Block),
+		DB:             db,
+		MinerResetChan: make(chan bool, 1),
 	}
 
 	return n
@@ -776,4 +778,12 @@ func (n *Node) IsOnMainChain(bi *BlockIndex) bool {
 	// 3. 比较 Hash 是否一致
 	// 如果高度相同但 Hash 不同，说明 bi 是侧链区块
 	return mainHashHex == bi.Hash
+}
+
+func (n *Node) GetResetChan() chan bool {
+	// 確保不會返回 nil (如果初始化忘了 make)
+	if n.MinerResetChan == nil {
+		n.MinerResetChan = make(chan bool, 1)
+	}
+	return n.MinerResetChan
 }

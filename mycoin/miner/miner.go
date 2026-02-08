@@ -24,6 +24,7 @@ type MinerNode interface {
 	AddBlockInterface(blk *blockchain.Block) error
 	BroadcastBlockHash(hashHex string)
 	IsSynced() bool
+	GetResetChan() chan bool
 }
 
 type TxPackage struct {
@@ -101,26 +102,24 @@ func (m *Miner) Start() {
 // 矿工挖矿（只负责算块，不管理交易来源）
 func (m *Miner) Mine(includeMempool bool) *blockchain.Block {
 
-	// 当前链头（Block，不是 BlockIndex）
+	// 1. 獲取當前鏈頭
 	prev := m.Node.GetBestBlock()
 	if prev == nil {
 		return nil
 	}
-	originalTip := prev.Hash
+	originalTip := prev.Hash // 記住我們是基於哪個塊開始挖的
 
+	// --- (中間打包交易的部分保持不變) ---
 	const MaxTxPerBlock = 5
 	var txs []blockchain.Transaction
 	included := make(map[string]bool)
 	totalFee := 0
 
-	// （如果启用 mempool，打包交易）
 	if includeMempool {
 		pkgs := m.buildPackages()
-
 		sort.Slice(pkgs, func(i, j int) bool {
 			return pkgs[i].Fee > pkgs[j].Fee
 		})
-
 		for _, pkg := range pkgs {
 			for _, tx := range pkg.Txs {
 				if len(txs) >= MaxTxPerBlock {
@@ -142,8 +141,9 @@ func (m *Miner) Mine(includeMempool bool) *blockchain.Block {
 		m.Node.GetReward()+totalFee,
 	)
 	txs = append([]blockchain.Transaction{*cb}, txs...)
+	// ------------------------------------
 
-	// 构造区块
+	// 2. 構造區塊
 	block := blockchain.NewBlock(
 		prev.Height+1,
 		prev.Hash,
@@ -153,19 +153,35 @@ func (m *Miner) Mine(includeMempool bool) *blockchain.Block {
 		m.Node.GetReward(),
 	)
 
+	// 確保 Bits 正確設置 (這是我們之前修復的 bug)
 	block.Bits = utils.BigToCompact(block.Target)
 
-	// 挖矿，期间检测链头是否更新
+	// 3. 🔥🔥🔥 關鍵修改：挖礦與中斷檢測 🔥🔥🔥
 	ok := block.Mine(func() bool {
-		best := m.Node.GetBestBlock()
-		// 🛡️ 增加安全检查：如果此时获取不到最新的完整区块，说明链正在变动或同步中
-		if best == nil {
-			return true // 返回 true 表示停止当前挖矿任务
+
+		// [新增] 優先檢查信號通道 (這是最快的！)
+		// 使用 select + default 實現非阻塞檢查
+		select {
+		case <-m.Node.GetResetChan(): //
+			// 收到 Network 發來的信號：有新塊了！立刻停止！
+			return true
+		default:
+			// 通道是空的，繼續往下執行
 		}
+
+		// [原有] 雙重保險：檢查鏈頭是否變更 (防止信號漏接)
+		best := m.Node.GetBestBlock()
+		if best == nil {
+			return true
+		}
+		// 如果現在的最強塊 Hash 不等於我們剛開始挖的那個 Hash，代表鏈變了，停止！
 		return !bytes.Equal(best.Hash, originalTip)
 	})
+
+	// 4. 處理結果
 	if !ok {
-		return nil // 链变更，丢弃
+		// 返回 nil 表示「這次挖礦被取消了」，外層迴圈會重新調用 Mine
+		return nil
 	}
 
 	return block

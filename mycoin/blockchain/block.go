@@ -7,6 +7,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"math"
 	"math/big"
 	"mycoin/utils"
 	"time"
@@ -77,29 +78,46 @@ func NewBlock(
 // PoW 挖矿
 // --------------------
 func (b *Block) Mine(abort func() bool) bool {
-	for {
-		if abort != nil && abort() {
-			return false
+	// 確保 Nonce 從 0 開始 (如果你希望隨機開始也可以不加這行)
+	// b.Nonce = 0
+
+	// 使用 MaxUint64 防止溢出導致的死循環
+	for b.Nonce < math.MaxUint64 {
+
+		// 🔥🔥🔥【效能優化關鍵】🔥🔥🔥
+		// 不要每一次都檢查！每計算 1000 次 Hash 才檢查一次信號。
+		// 這樣可以讓 CPU 專注於計算 Hash，而不是一直處理 channel。
+		if b.Nonce%1000 == 0 {
+			if abort != nil && abort() {
+				// 接收到 Network 的「重置信號」，停止當前挖礦
+				return false
+			}
 		}
 
+		// 計算區塊 Hash
 		hash := b.CalcHash()
 
+		// 檢查 Hash 是否滿足難度目標
 		if hashMeetsTarget(hash, b.Target) {
 			b.Hash = hash
+
+			// 挖到了！打印詳細信息
 			fmt.Println("=== MINED BLOCK ===")
 			fmt.Printf("Height     = %d\n", b.Height)
 			fmt.Printf("PrevHash   = %x\n", b.PrevHash)
 			fmt.Printf("Timestamp  = %d\n", b.Timestamp)
-			fmt.Printf("Bits       = %x\n", b.Bits) // 打印 Bits 檢查
+			fmt.Printf("Bits       = %d\n", b.Bits)
 			fmt.Printf("Nonce      = %d\n", b.Nonce)
 			fmt.Printf("MerkleRoot = %x\n", b.MerkleRoot)
 			fmt.Printf("Hash       = %x\n", b.Hash)
 
-			return true
+			return true // 成功挖到
 		}
 
 		b.Nonce++
 	}
+
+	return false // 跑遍了所有 Nonce 都沒挖到 (極低機率)
 }
 
 // --------------------

@@ -221,31 +221,39 @@ func (h *Handler) handleBlock(peer *Peer, msg *Message) {
 	hashHex := hex.EncodeToString(blk.Hash)
 	prevHex := hex.EncodeToString(blk.PrevHash)
 
-	fmt.Printf("🌐 [Network] 收到區塊: 高度 %d, Hash: %s\n", blk.Height, hashHex)
-
-	// 1. 防止重複處理
+	// 1. 檢查是否已經擁有此塊 (防止重複處理)
 	bi := h.Node.Blocks[hashHex]
-	if bi != nil && bi.Block != nil {
-		return
+	alreadyHasBody := (bi != nil && bi.Block != nil)
+
+	if alreadyHasBody {
+		// [修復問題1]：即使已經有了，如果是同步模式，也要檢查是不是該抓下一塊了！
+		// 很多時候是因為收到自己廣播的回音，導致這裡直接 return 而忘了抓下一塊
+		if h.Node.IsSyncing {
+			h.requestMissingBlockBodies(peer)
+		}
+		return // 已經處理過，直接返回
 	}
 
-	// 找到或創建 Index
+	fmt.Printf("🌐 [Network] 收到區塊: 高度 %d, Hash: %s\n", blk.Height, hashHex)
+
+	// 2. 建立 Index (如果只有 Header 會走到這，如果全新的也會走到這)
 	if bi == nil {
 		bi = &node.BlockIndex{
-			Hash:     hashHex,
-			PrevHash: prevHex,
-			Height:   blk.Height,
+			Hash:       hashHex,
+			PrevHash:   prevHex,
+			Height:     blk.Height,
+			CumWorkInt: node.WorkFromTarget(blk.Target),
 		}
-		bi.CumWorkInt = node.WorkFromTarget(blk.Target)
 		bi.CumWork = bi.CumWorkInt.String()
 		h.Node.Blocks[hashHex] = bi
 	}
 
-	// 2. 檢查父塊 (Header 與 Body)
+	// 3. 檢查父塊是否存在
 	parent := h.Node.Blocks[prevHex]
 	if parent == nil {
-		fmt.Printf("⚠️ 缺少父塊 Header %s，暫存為孤立塊並補洞\n", prevHex)
+		fmt.Printf("⚠️ 缺少父塊 Header %s，存入孤立池\n", prevHex)
 		h.Node.AddOrphan(blk)
+		// 觸發 Header 下載
 		peer.Send(Message{
 			Type: MsgGetHeaders,
 			Data: GetHeadersPayload{Locators: h.buildBlockLocator()},
@@ -253,25 +261,18 @@ func (h *Handler) handleBlock(peer *Peer, msg *Message) {
 		return
 	}
 
-	if parent.Block == nil {
-		fmt.Printf("📦 缺少父塊內容 %d，存入孤立池並觸發補 Body\n", parent.Height)
-		h.Node.AddOrphan(blk)
-		h.requestMissingBlockBodies(peer)
-		return
-	}
-
-	// 3. 驗證並接入 (成功才填入 bi.Block)
+	// 4. 驗證並寫入資料庫
 	success := h.Node.AddBlock(blk)
 	if !success {
 		fmt.Printf("❌ 區塊 %d 驗證失敗\n", blk.Height)
 		return
 	}
 
-	// 正式填充資料與樹狀關聯
+	// 填充內存資料
 	bi.Block = blk
 	bi.Parent = parent
 
-	// 更新父塊的子節點列表 (確保樹狀結構完整)
+	// 維護樹狀結構
 	exists := false
 	for _, child := range parent.Children {
 		if child.Hash == bi.Hash {
@@ -283,7 +284,18 @@ func (h *Handler) handleBlock(peer *Peer, msg *Message) {
 		parent.Children = append(parent.Children, bi)
 	}
 
-	// 4. 處理孤立塊 (遞迴)
+	// 5. [修復問題2] 處理挖礦競爭 (Miner Interrupt)
+	// 如果這個新塊延伸了主鏈（變成了新的 Best），通知礦工立刻重置！
+	if h.Node.Best.Hash == hashHex {
+		// 非阻塞發送，通知礦工
+		select {
+		case h.Node.MinerResetChan <- true:
+			// fmt.Println("⚡ 收到新區塊，通知礦工重置...")
+		default:
+		}
+	}
+
+	// 6. 處理孤立塊
 	if orphans, ok := h.Node.Orphans[hashHex]; ok {
 		delete(h.Node.Orphans, hashHex)
 		for _, orphan := range orphans {
@@ -291,42 +303,30 @@ func (h *Handler) handleBlock(peer *Peer, msg *Message) {
 		}
 	}
 
-	// 5. 同步邏輯判斷
+	// 7. [修復問題1] 同步接力邏輯
 	shouldBroadcast := false
 
 	if h.Node.IsSyncing {
 		if !h.Node.AllBodiesDownloaded() {
-			// 情況 A: 還在補洞，繼續要下一塊，不廣播
-			// 🔥🔥🔥 這是你原本有的，但可能沒觸發，或者位置不對 🔥🔥🔥
+			// 還有缺塊，繼續要！
 			h.requestMissingBlockBodies(peer)
-		} else if h.Node.HeadersSynced {
-			// 情況 B: 補完最後一塊了！
+		} else {
+			// 全部補齊，結束同步
 			h.finishSyncing()
 			shouldBroadcast = true
 		}
 	} else {
-		// 情況 C: 正常運行狀態下收到新塊，直接廣播
+		// 正常狀態，直接廣播
 		shouldBroadcast = true
 	}
 
-	// ---------------------------------------------------------
-	// 🔥🔥🔥 強制接力 (雙重保險) 🔥🔥🔥
-	// ---------------------------------------------------------
-	// 如果還在同步中，且刚才处理的是一个缺块，
-	// 无论如何都要触发 requestMissingBlockBodies，确保不会停下来
-	if h.Node.IsSyncing && !h.Node.AllBodiesDownloaded() {
-		h.requestMissingBlockBodies(peer)
-	}
-	// 6. 📣 全域唯一廣播點
+	// 8. 廣播
 	if shouldBroadcast {
-		// 如果剛完成同步，廣播我們現在的 Best Hash
-		// 如果是收到新塊，廣播該塊的 hashHex
 		targetHash := hashHex
 		if h.Node.SyncState == node.SyncSynced {
 			targetHash = h.Node.Best.Hash
 		}
-
-		fmt.Printf("📣 正在廣播有效區塊: %s\n", targetHash)
+		// fmt.Printf("📣 正在廣播有效區塊: %s\n", targetHash)
 		h.broadcastInv(targetHash)
 	}
 }
