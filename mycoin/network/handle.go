@@ -115,6 +115,13 @@ func (h *Handler) handleVerAck(peer *Peer, msg *Message) {
 		peer.State = StateActive
 		log.Println("✅ peer active:", peer.Addr)
 
+		h.Network.mu.Lock()
+		h.Network.Peers[peer.Addr] = peer
+		h.Network.mu.Unlock()
+
+		// 為了確認，我們印出來看看
+		fmt.Printf("🔒 [Network] 已將 %s 強制加入廣播名單，目前連線數: %d\n", peer.Addr, len(h.Network.Peers))
+
 		// 🌐 地址发现
 		peer.Send(Message{Type: MsgGetAddr})
 
