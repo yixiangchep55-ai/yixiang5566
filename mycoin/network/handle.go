@@ -739,25 +739,33 @@ func (h *Handler) buildBlockLocator() []string {
 	return locators
 }
 
+// mycoin/network/handle.go
+
 func (h *Handler) BroadcastNewBlock(b *blockchain.Block) {
-	// 轉換成 DTO 方便傳輸
-	// 注意：這裡需要你的 BlockToDTO 函數，如果需要 BlockIndex，可以傳 nil 或暫時只傳 Block
-	// 如果你的 BlockToDTO 需要 BlockIndex，我們可以手動組裝一個簡單的 DTO
+	// 準備數據 (這裡假設你的 BlockToDTO 已經修正)
+	dto := BlockToDTO(b, nil)
 
-	dto := BlockToDTO(b, nil) // 假設你的 BlockToDTO 允許第二個參數為 nil
-
-	log.Printf("📣 [強力廣播] 直接發送新區塊: 高度 %d, Hash %x", b.Height, b.Hash)
+	log.Printf("📣 [強力廣播] 準備發送區塊: 高度 %d, Hash %x", b.Height, b.Hash)
 
 	h.Network.mu.Lock()
 	defer h.Network.mu.Unlock()
 
+	activeCount := 0
 	for _, p := range h.Network.Peers {
+		// 🔥 除錯：印出所有 Peer 的狀態
+		fmt.Printf("   -> 檢查 Peer %s (狀態: %d)\n", p.Addr, p.State)
+
 		if p.State == StateActive {
-			// 🔥 重點：直接發送 MsgBlock (不再發 Inv)
 			p.Send(Message{
 				Type: MsgBlock,
 				Data: dto,
 			})
+			fmt.Printf("   -> ✅ 已發送 MsgBlock 給 %s\n", p.Addr)
+			activeCount++
 		}
+	}
+
+	if activeCount == 0 {
+		fmt.Println("⚠️ [警告] 廣播失敗：沒有任何活躍的 Peer (StateActive)！")
 	}
 }
