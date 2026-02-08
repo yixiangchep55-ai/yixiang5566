@@ -136,30 +136,31 @@ func (b *Block) Verify(prev *Block) error {
 
 func (b *Block) CalcHeader() []byte {
 	buf := make([]byte, 0, 128)
-	tmp := make([]byte, 8)
-	tmp4 := make([]byte, 4) // 用於 Bits
 
-	// Height
-	binary.LittleEndian.PutUint64(tmp, b.Height)
-	buf = append(buf, tmp...)
+	// Helper buffer
+	buf8 := make([]byte, 8)
+	buf4 := make([]byte, 4)
 
-	// PrevHash
+	// 1. Height (8 bytes)
+	binary.LittleEndian.PutUint64(buf8, b.Height)
+	buf = append(buf, buf8...)
+
+	// 2. PrevHash (variable)
 	buf = append(buf, b.PrevHash...)
 
-	// Timestamp
-	binary.LittleEndian.PutUint64(tmp, uint64(b.Timestamp))
-	buf = append(buf, tmp...)
+	// 3. Timestamp (8 bytes)
+	binary.LittleEndian.PutUint64(buf8, uint64(b.Timestamp))
+	buf = append(buf, buf8...)
 
-	// 🔥 關鍵修正：把 Bits 加入 Hash 計算
-	// 這樣礦工就不能隨意降低難度，否則 Hash 會變
-	binary.LittleEndian.PutUint32(tmp4, b.Bits)
-	buf = append(buf, tmp4...)
+	// 4. Bits (4 bytes)  <-- 核心修正
+	binary.LittleEndian.PutUint32(buf4, b.Bits)
+	buf = append(buf, buf4...)
 
-	// Nonce
-	binary.LittleEndian.PutUint64(tmp, b.Nonce)
-	buf = append(buf, tmp...)
+	// 5. Nonce (8 bytes)
+	binary.LittleEndian.PutUint64(buf8, b.Nonce)
+	buf = append(buf, buf8...)
 
-	// MerkleRoot
+	// 6. MerkleRoot (variable)
 	buf = append(buf, b.MerkleRoot...)
 
 	return buf
