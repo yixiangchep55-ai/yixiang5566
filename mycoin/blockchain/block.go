@@ -163,16 +163,6 @@ func (b *Block) CalcHeader() []byte {
 	// 6. MerkleRoot (variable)
 	buf = append(buf, b.MerkleRoot...)
 
-	if b.Height == 1 {
-		fmt.Println("================== HEADER HEX DUMP ==================")
-		fmt.Printf("Role: ??? (Host or VM)\n")
-		fmt.Printf("Height: %d\n", b.Height)
-		fmt.Printf("Bits:   %d\n", b.Bits)
-		fmt.Printf("Merkle: %x\n", b.MerkleRoot)
-		fmt.Printf("HEADER: %x\n", buf) // 👈 這是關鍵！
-		fmt.Println("=====================================================")
-	}
-
 	return buf
 }
 
@@ -245,12 +235,6 @@ func DeserializeBlock(data []byte) (*Block, error) {
 	if err := json.Unmarshal(data, &view); err != nil {
 		return nil, err
 	}
-
-	fmt.Println("------------------------------------------------")
-	fmt.Printf("🔍 DEBUG: 收到區塊高度: %d\n", view.Height)
-	fmt.Printf("🔍 DEBUG: JSON裡的 Bits: %d (如果是0就代表沒收到)\n", view.Bits)
-	fmt.Printf("🔍 DEBUG: JSON裡的 Hash: %s\n", view.Hash)
-	fmt.Println("------------------------------------------------")
 
 	prevHashBytes, err := hex.DecodeString(view.PrevHash)
 	if err != nil {

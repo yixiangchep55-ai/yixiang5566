@@ -217,14 +217,6 @@ func (h *Handler) handleBlock(peer *Peer, msg *Message) {
 		return
 	}
 
-	// 🕵️‍♂️🕵️‍♂️🕵️‍♂️【監控攝像頭】🕵️‍♂️🕵️‍♂️🕵️‍♂️
-	fmt.Println("========================================")
-	fmt.Printf("🔍 DEBUG: 收到區塊高度: %d\n", dto.Height)
-	fmt.Printf("🔍 DEBUG: DTO裡的 Bits: %d (10進位)\n", dto.Bits) // 關鍵看這裡！
-	fmt.Printf("🔍 DEBUG: DTO裡的 Hash: %s\n", dto.Hash)
-	fmt.Println("========================================")
-	// 🕵️‍♂️🕵️‍♂️🕵️‍♂️🕵️‍♂️🕵️‍♂️🕵️‍♂️🕵️‍♂️🕵️‍♂️🕵️‍♂️🕵️‍♂️🕵️‍♂️
-
 	blk := DTOToBlock(dto)
 	hashHex := hex.EncodeToString(blk.Hash)
 	prevHex := hex.EncodeToString(blk.PrevHash)
