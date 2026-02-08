@@ -297,17 +297,26 @@ func (h *Handler) handleBlock(peer *Peer, msg *Message) {
 	if h.Node.IsSyncing {
 		if !h.Node.AllBodiesDownloaded() {
 			// 情況 A: 還在補洞，繼續要下一塊，不廣播
+			// 🔥🔥🔥 這是你原本有的，但可能沒觸發，或者位置不對 🔥🔥🔥
 			h.requestMissingBlockBodies(peer)
 		} else if h.Node.HeadersSynced {
 			// 情況 B: 補完最後一塊了！
 			h.finishSyncing()
-			shouldBroadcast = true // 同步完成，我們要把最強大的 Tip 告訴大家
+			shouldBroadcast = true
 		}
 	} else {
 		// 情況 C: 正常運行狀態下收到新塊，直接廣播
 		shouldBroadcast = true
 	}
 
+	// ---------------------------------------------------------
+	// 🔥🔥🔥 強制接力 (雙重保險) 🔥🔥🔥
+	// ---------------------------------------------------------
+	// 如果還在同步中，且刚才处理的是一个缺块，
+	// 无论如何都要触发 requestMissingBlockBodies，确保不会停下来
+	if h.Node.IsSyncing && !h.Node.AllBodiesDownloaded() {
+		h.requestMissingBlockBodies(peer)
+	}
 	// 6. 📣 全域唯一廣播點
 	if shouldBroadcast {
 		// 如果剛完成同步，廣播我們現在的 Best Hash
