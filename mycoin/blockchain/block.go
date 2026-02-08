@@ -236,6 +236,12 @@ func DeserializeBlock(data []byte) (*Block, error) {
 		return nil, err
 	}
 
+	fmt.Println("------------------------------------------------")
+	fmt.Printf("🔍 DEBUG: 收到區塊高度: %d\n", view.Height)
+	fmt.Printf("🔍 DEBUG: JSON裡的 Bits: %d (如果是0就代表沒收到)\n", view.Bits)
+	fmt.Printf("🔍 DEBUG: JSON裡的 Hash: %s\n", view.Hash)
+	fmt.Println("------------------------------------------------")
+
 	prevHashBytes, err := hex.DecodeString(view.PrevHash)
 	if err != nil {
 		return nil, err

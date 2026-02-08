@@ -7,6 +7,9 @@ type BlockDTO struct {
 	Timestamp int64  `json:"timestamp"`
 	Nonce     uint64 `json:"nonce"`
 
+	// 🔥🔥🔥 必須補上這個！ 🔥🔥🔥
+	Bits uint32 `json:"bits"`
+
 	Target  string `json:"target"`   // hex string
 	CumWork string `json:"cum_work"` // hex string
 
