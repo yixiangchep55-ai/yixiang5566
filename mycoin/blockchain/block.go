@@ -32,10 +32,13 @@ type Block struct {
 
 	Hash    []byte
 	HashHex string `json:"hash"`
+
+	Bits uint32
 }
 
 // --------------------
 // 创建新区块（不再计算 cumwork）
+// --------------------
 // --------------------
 func NewBlock(
 	height uint64,
@@ -60,6 +63,11 @@ func NewBlock(
 		Reward:       reward,
 	}
 
+	// 🔥 關鍵修正：自動計算 Bits
+	// 這一步確保 Target 被正確壓縮存入 Bits
+	b.Bits = utils.BigToCompact(target)
+
+	// 計算 Hash (現在會包含 Bits)
 	b.Hash = b.CalcHash()
 
 	return b
@@ -82,9 +90,9 @@ func (b *Block) Mine(abort func() bool) bool {
 			fmt.Printf("Height     = %d\n", b.Height)
 			fmt.Printf("PrevHash   = %x\n", b.PrevHash)
 			fmt.Printf("Timestamp  = %d\n", b.Timestamp)
+			fmt.Printf("Bits       = %x\n", b.Bits) // 打印 Bits 檢查
 			fmt.Printf("Nonce      = %d\n", b.Nonce)
 			fmt.Printf("MerkleRoot = %x\n", b.MerkleRoot)
-			fmt.Printf("Header     = %x\n", b.CalcHeader())
 			fmt.Printf("Hash       = %x\n", b.Hash)
 
 			return true
@@ -107,9 +115,10 @@ func (b *Block) Verify(prev *Block) error {
 		}
 	}
 
+	// 驗證 Hash 是否正確 (Hash 必須包含 Bits 的計算結果)
 	hash := b.CalcHash()
 	if !hashMeetsTarget(hash, b.Target) {
-		return fmt.Errorf("PoW invalid")
+		return fmt.Errorf("PoW invalid: hash %x > target %x", hash, b.Target)
 	}
 
 	for _, tx := range b.Transactions {
@@ -128,51 +137,57 @@ func (b *Block) Verify(prev *Block) error {
 func (b *Block) CalcHeader() []byte {
 	buf := make([]byte, 0, 128)
 	tmp := make([]byte, 8)
+	tmp4 := make([]byte, 4) // 用於 Bits
 
-	// Height (uint64 little-endian)
+	// Height
 	binary.LittleEndian.PutUint64(tmp, b.Height)
 	buf = append(buf, tmp...)
 
-	// PrevHash (32 bytes)
+	// PrevHash
 	buf = append(buf, b.PrevHash...)
 
-	// Timestamp (int64)
+	// Timestamp
 	binary.LittleEndian.PutUint64(tmp, uint64(b.Timestamp))
 	buf = append(buf, tmp...)
 
-	// Nonce (uint64)
+	// 🔥 關鍵修正：把 Bits 加入 Hash 計算
+	// 這樣礦工就不能隨意降低難度，否則 Hash 會變
+	binary.LittleEndian.PutUint32(tmp4, b.Bits)
+	buf = append(buf, tmp4...)
+
+	// Nonce
 	binary.LittleEndian.PutUint64(tmp, b.Nonce)
 	buf = append(buf, tmp...)
 
-	// MerkleRoot (32 bytes)
+	// MerkleRoot
 	buf = append(buf, b.MerkleRoot...)
 
 	return buf
 }
+
 func (b *Block) CalcHash() []byte {
 	header := b.CalcHeader()
 	h := sha256.Sum256(header)
 	return h[:]
 }
 
-// --------------------
-// hash < target 判断
-// --------------------
 func hashMeetsTarget(hash []byte, target *big.Int) bool {
 	hashInt := new(big.Int).SetBytes(hash)
 	return hashInt.Cmp(target) <= 0
 }
 
 // --------------------
-// 序列化
+// 序列化 (JSON)
 // --------------------
 func (b *Block) Serialize() []byte {
+	// 定義臨時結構體，加入 Bits
 	view := struct {
 		Height       uint64        `json:"height"`
 		PrevHash     string        `json:"prev_hash"`
 		Timestamp    int64         `json:"timestamp"`
 		Nonce        uint64        `json:"nonce"`
-		Target       string        `json:"target"`
+		Bits         uint32        `json:"bits"`   // 🔥 寫入 JSON
+		Target       string        `json:"target"` // 為了人類可讀保留
 		MerkleRoot   string        `json:"merkle_root"`
 		Transactions []Transaction `json:"transactions"`
 		Miner        string        `json:"miner"`
@@ -183,6 +198,7 @@ func (b *Block) Serialize() []byte {
 		PrevHash:     hex.EncodeToString(b.PrevHash),
 		Timestamp:    b.Timestamp,
 		Nonce:        b.Nonce,
+		Bits:         b.Bits, // 🔥 賦值
 		Target:       utils.FormatTargetHex(b.Target),
 		MerkleRoot:   hex.EncodeToString(b.MerkleRoot),
 		Transactions: b.Transactions,
@@ -200,12 +216,13 @@ func (b *Block) Serialize() []byte {
 
 func DeserializeBlock(data []byte) (*Block, error) {
 
-	// JSON view（字符串格式）
+	// 定義臨時結構體，加入 Bits
 	var view struct {
 		Height       uint64        `json:"height"`
 		PrevHash     string        `json:"prev_hash"`
 		Timestamp    int64         `json:"timestamp"`
 		Nonce        uint64        `json:"nonce"`
+		Bits         uint32        `json:"bits"` // 🔥 讀取 JSON
 		Target       string        `json:"target"`
 		MerkleRoot   string        `json:"merkle_root"`
 		Transactions []Transaction `json:"transactions"`
@@ -218,7 +235,6 @@ func DeserializeBlock(data []byte) (*Block, error) {
 		return nil, err
 	}
 
-	// Now convert JSON string fields → binary fields
 	prevHashBytes, err := hex.DecodeString(view.PrevHash)
 	if err != nil {
 		return nil, err
@@ -234,9 +250,12 @@ func DeserializeBlock(data []byte) (*Block, error) {
 		return nil, err
 	}
 
-	// Target must be restored
-	targetInt := new(big.Int)
-	targetInt.SetString(view.Target, 16)
+	// ---------------------------------------------------------
+	// 🔥 關鍵修復：從 Bits 還原 Target
+	// ---------------------------------------------------------
+	// 我們不再信任 view.Target (字串)，而是根據 Bits (共識規則) 還原
+	// 這樣保證了 VM 收到的 Target 是正確的
+	targetInt := utils.CompactToBig(view.Bits)
 
 	// Build real block
 	b := &Block{
@@ -244,7 +263,8 @@ func DeserializeBlock(data []byte) (*Block, error) {
 		PrevHash:     prevHashBytes,
 		Timestamp:    view.Timestamp,
 		Nonce:        view.Nonce,
-		Target:       targetInt,
+		Bits:         view.Bits, // 🔥 賦值
+		Target:       targetInt, // 🔥 使用還原後的 Target
 		MerkleRoot:   merkleBytes,
 		Transactions: view.Transactions,
 		Miner:        view.Miner,

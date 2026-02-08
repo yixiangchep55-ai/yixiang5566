@@ -7,6 +7,7 @@ import (
 	"math/big"
 	"mycoin/blockchain"
 	"mycoin/mempool"
+	"mycoin/utils"
 
 	"time"
 
@@ -151,6 +152,8 @@ func (m *Miner) Mine(includeMempool bool) *blockchain.Block {
 		m.Address,
 		m.Node.GetReward(),
 	)
+
+	block.Bits = utils.BigToCompact(block.Target)
 
 	// 挖矿，期间检测链头是否更新
 	ok := block.Mine(func() bool {
