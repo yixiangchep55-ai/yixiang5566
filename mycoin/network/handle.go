@@ -25,6 +25,10 @@ func NewHandler(n *node.Node) *Handler {
 }
 
 func (h *Handler) OnMessage(peer *Peer, msg *Message) {
+
+	if msg.Type == MsgBlock {
+		fmt.Printf("🕵️ [Debug] TCP 收到 MsgBlock 來自 %s (長度 %v)\n", peer.Addr, msg.Data)
+	}
 	switch msg.Type {
 
 	case MsgVersion:

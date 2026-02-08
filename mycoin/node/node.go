@@ -128,63 +128,39 @@ func NewNode(mode string, datadir string) *Node {
 func (n *Node) Mine() {
 	fmt.Println("👷 [Node] 礦工主控程式已啟動...")
 
-	// 1. 安全檢查：確保 Miner 實例存在
-	// 如果你在 NewNode 裡沒初始化 Miner，這裡會自動補上
 	if n.Miner == nil {
-		// 假設你的 miner 包有 NewMiner 函數，且 n 符合 MinerNode 介面
 		n.Miner = miner.NewMiner(n.MiningAddress, n)
 	}
 
-	// 2. 進入無限迴圈
 	for {
-		// ---------------------------------------------------------
-		// A. 同步檢查 (Sync Guard)
-		// ---------------------------------------------------------
-		// 如果節點還在同步區塊 (IsSyncing) 或者還沒追上最新高度
-		// 我們絕對不能挖礦，否則會挖出廢塊 (分叉)
+		// 1. 同步檢查
 		if !n.IsSynced() {
-			// 每 2 秒檢查一次，直到同步完成
-			// fmt.Println("⏳ [Node] 等待同步完成中...")
-			// (註解掉避免洗版，需要看狀態可打開)
 			time.Sleep(2 * time.Second)
 			continue
 		}
 
-		// ---------------------------------------------------------
-		// B. 呼叫核心挖礦邏輯 (Miner.Mine)
-		// ---------------------------------------------------------
-		// 參數 true 表示我們要打包 Mempool 裡的交易
-		// 這個函數會一直跑，直到「挖到了」或者「被信號打斷」
-		// 它會返回 *Block (成功) 或者 nil (被打斷)
+		// 2. 挖礦
 		newBlock := n.Miner.Mine(true)
 
-		// ---------------------------------------------------------
-		// C. 處理結果
-		// ---------------------------------------------------------
+		// 3. 處理結果
 		if newBlock != nil {
-			// ✅ 情況 1: 挖礦成功！
 			fmt.Printf("🍺 [Node] 挖礦成功！高度: %d, Hash: %x\n", newBlock.Height, newBlock.Hash)
 
-			// 1. 存入自己的資料庫 (驗證並連接)
 			if n.AddBlock(newBlock) {
-				// 2. 🔥🔥🔥 關鍵：直接廣播給全網！ (Direct Push) 🔥🔥🔥
-				// 這會觸發 network/handle.go 的 BroadcastNewBlock
-				// 直接發送 MsgBlock 給所有 Peer，強迫他們更新
 				n.BroadcastNewBlock(newBlock)
 			} else {
-				fmt.Println("⚠️ [Node] 嚴重警告：自己挖到的區塊驗證失敗 (可能是孤塊)")
+				fmt.Println("⚠️ [Node] 嚴重警告：自己挖到的區塊驗證失敗")
 			}
 
+			// 🔥🔥🔥 關鍵修正：挖到塊之後，強制休息 2 秒！ 🔥🔥🔥
+			// 這能確保網路有足夠時間傳播，也解決了 CPU 佔用問題
+			fmt.Println("⏳ 挖礦冷卻中 (2秒)...")
+			time.Sleep(5 * time.Second)
+
 		} else {
-			// 🛑 情況 2: 返回 nil，代表被中斷了 (Miner 收到重置信號)
-			fmt.Println("🔄 [Node] 偵測到鏈更新 (收到信號)，切換至新區塊鏈頭，重新開始...")
-
-			// 這裡不需要 sleep，因為既然有新塊了，我們應該立刻基於新塊開始挖！
+			// 被中斷 (收到別人的塊)，這裡不用 sleep，直接進入下一輪去搶塊
+			fmt.Println("🔄 [Node] 偵測到鏈更新...")
 		}
-
-		// 迴圈結束，立刻進入下一輪
-		// 下一次執行 n.Miner.Mine() 時，它內部會呼叫 n.GetBestBlock()
-		// 自然就會抓到最新的高度 (無論是自己剛挖的，還是別人傳來的)
 	}
 }
 

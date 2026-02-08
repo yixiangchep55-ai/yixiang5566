@@ -88,6 +88,7 @@ func (b *Block) Mine(abort func() bool) bool {
 		// 不要每一次都檢查！每計算 1000 次 Hash 才檢查一次信號。
 		// 這樣可以讓 CPU 專注於計算 Hash，而不是一直處理 channel。
 		if b.Nonce%1000 == 0 {
+
 			if abort != nil && abort() {
 				// 接收到 Network 的「重置信號」，停止當前挖礦
 				return false
