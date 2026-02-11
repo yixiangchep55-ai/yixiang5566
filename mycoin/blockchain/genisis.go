@@ -4,6 +4,7 @@ import (
 	"encoding/hex"
 	"fmt"
 	"math/big"
+	"mycoin/utils"
 )
 
 func NewGenesisBlock(target *big.Int) *Block {
@@ -25,6 +26,7 @@ func NewGenesisBlock(target *big.Int) *Block {
 		TargetHex:    target.Text(16),          // 展示用 hex
 		Miner:        "GENESIS",
 		Reward:       1000000,
+		Bits:         utils.BigToCompact(target),
 	}
 
 	block.Hash = block.CalcHash() // ✔ binary hash

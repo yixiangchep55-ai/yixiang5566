@@ -684,39 +684,54 @@ func (h *Handler) handleHeaders(peer *Peer, msg *Message) {
 			},
 		})
 	} else {
-		// 如果 addedCount == 0，代表對方傳來的 headers 我們全都有了。
-		// 這意味著我們已經跟上對方了，不需要再浪費頻寬一直問。
-		fmt.Println("✅ 收到的 Headers 都是重複的，認定同步完成！")
-		h.Node.HeadersSynced = true
-		h.requestMissingBlockBodies(peer)
+		// 如果 addedCount == 0，代表索引都已經有了
+		fmt.Println("✅ 索引已存在，檢查是否缺少區塊體...")
+
+		// 🔥 關鍵：檢查目前 Best 鏈路徑上是否缺 Body
+		if h.Node.HasMissingBodies() {
+			fmt.Println("🔄 發現有頭無身的區塊，開始請求區塊體...")
+			h.requestMissingBlockBodies(peer)
+		} else {
+			fmt.Println("✅ Headers 與 Bodies 皆已同步完成！")
+			h.Node.HeadersSynced = true
+		}
 	}
 }
 
 func (h *Handler) requestMissingBlockBodies(peer *Peer) {
 	bi := h.Node.Best
-	var target *node.BlockIndex
+	missingBlocks := []*node.BlockIndex{}
 
-	// 1. 往回走，直到找到「最靠近創世塊」的那個缺口
+	// 1. 收集缺口，限制一次請求的數量（例如 16 個）
 	for bi != nil && bi.Height > 0 {
 		if bi.Block == nil {
-			target = bi
+			// 注意：我們是往回走，所以收集到的順序是 [新 -> 舊]
+			missingBlocks = append(missingBlocks, bi)
 		}
 		bi = bi.Parent
+
+		// 達到批量上限就停止搜尋
+		if len(missingBlocks) >= 16 {
+			break
+		}
 	}
 
-	// 2. 如果發現還有缺塊，發送請求並返回
-	if target != nil {
-		fmt.Printf("📥 正在請求最舊的缺塊: 高度 %d, Hash: %s\n", target.Height, target.Hash)
-		h.requestBlock(peer, target.Hash)
+	// 2. 如果有缺塊，按「從舊到新」的順序請求
+	if len(missingBlocks) > 0 {
+		fmt.Printf("📥 發現 %d 個缺塊，正在請求最舊的一批...\n", len(missingBlocks))
+
+		// 倒序遍歷，讓請求順序變成「舊 -> 新」
+		for i := len(missingBlocks) - 1; i >= 0; i-- {
+			target := missingBlocks[i]
+			h.requestBlock(peer, target.Hash)
+		}
 		return
 	}
 
-	// 3. ⭐ 關鍵修正：刪除所有 if 判斷，直接強制完成同步
-	// 無論之前狀態為何，只要確認無缺塊，就觸發同步完成 -> 喚醒礦工
+	// 3. 無缺塊，觸發完成
 	fmt.Println("✅ 所有區塊內容已齊全，觸發同步完成...")
 	h.finishSyncing()
 }
-
 func (h *Handler) requestBlock(peer *Peer, hash string) {
 	peer.Send(Message{
 		Type: MsgGetData,

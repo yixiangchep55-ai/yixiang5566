@@ -269,18 +269,19 @@ func (n *Node) AddBlock(block *blockchain.Block) bool {
 	// 1. 檢查是否已存在 (Deduplication)
 	// ---------------------------------------------------------
 	if bi, exists := n.Blocks[hashHex]; exists {
-		// 情況 A: 我們之前只收到了 Header (索引存在)，現在收到了 Body
+		// 情況 A: 我們之前只收到了 Header (索引存在)，現在收到了 Body (補齊資料)
 		if bi.Block == nil {
 			fmt.Printf("📦 收到區塊體，補齊資料: 高度 %d\n", bi.Height)
 			bi.Block = block
 
-			// 補齊後，其實應該檢查這是否會觸發 Reorg (例如 FastSync 結束時)
-			// 但為了簡化，我們這裡先回傳 true，等待下一個新塊來觸發延伸
+			// 🔥🔥🔥 關鍵修正：補齊資料後，絕對不能直接 return true！ 🔥🔥🔥
+			// 必須讓它「往下走」，去執行第 2 步（找父塊）和第 3 步（connectBlock），
+			// 這樣節點才會去檢查：「這條剛補齊的鏈是不是比我現在的更強？」
+
+		} else {
+			// 情況 B: 已經完全存在了 (Body 也有了)，直接忽略
 			return true
 		}
-
-		// 情況 B: 已經完全存在了，直接忽略
-		return true
 	}
 
 	// ---------------------------------------------------------
@@ -290,20 +291,15 @@ func (n *Node) AddBlock(block *blockchain.Block) bool {
 	if !exists {
 		// 這是孤兒塊，存入孤兒池
 		log.Printf("⚠️ 發現孤塊 (缺少父塊 %s): 高度 %d\n", prevHex, block.Height)
-
-		// 呼叫你原本的 AddOrphan 函數
 		n.AddOrphan(block)
-
-		// 注意：這裡 return false 是為了告訴調用者 (handleBlock)
-		// 「這個塊還沒連上主鏈」，這樣 handleBlock 才會去觸發 GetHeaders 同步
 		return false
 	}
 
 	// ---------------------------------------------------------
 	// 3. 交給 connectBlock 進行核心處理
 	// ---------------------------------------------------------
-	// 🔥 這裡才是重點！
-	// 驗證難度、建立 BlockIndex、計算 CumWork、處理 Reorg 全部都在這裡面做
+	// 這裡會處理驗證、計算累積工作量、以及最重要的鏈重組 (Reorg)
+	// 即使是剛補齊資料的區塊，進到這裡後也會因為 CumWork 更大而觸發 Reorg
 	success := n.connectBlock(block, parentIndex)
 
 	if !success {
@@ -531,6 +527,9 @@ func (n *Node) initGenesis() {
 		CumWorkInt: work,
 		Parent:     nil,
 		Children:   []*BlockIndex{}, // 养成初始化切片的好习惯
+
+		Bits:      genesis.Bits,
+		Timestamp: genesis.Timestamp,
 	}
 
 	// --- 写入数据库 ---
@@ -559,6 +558,7 @@ func (n *Node) initGenesis() {
 	n.UTXO.Add(genesis.Transactions[0])
 
 	fmt.Println("🪐 Genesis block created.")
+	fmt.Printf("🔍 [Init] Genesis Bits: %d (預期: 504365055)\n", bi.Bits)
 	fmt.Println("GENESIS TARGET =", utils.FormatTargetHex(genesis.Target))
 }
 
@@ -833,4 +833,16 @@ func (n *Node) GetResetChan() chan bool {
 		n.MinerResetChan = make(chan bool, 1)
 	}
 	return n.MinerResetChan
+}
+
+// HasMissingBodies 檢查本地索引中是否存有「有頭無身」的區塊
+func (n *Node) HasMissingBodies() bool {
+	// 遍歷所有已知區塊索引
+	for _, bi := range n.Blocks {
+		// 如果該索引的高度比目前主鏈高，且還沒有下載區塊體
+		if bi.Height > n.Best.Height && bi.Block == nil {
+			return true
+		}
+	}
+	return false
 }
