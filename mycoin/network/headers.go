@@ -13,6 +13,7 @@ type HeaderDTO struct {
 	Height     uint64 `json:"height"`
 	Target     string `json:"target"`   // hex
 	CumWork    string `json:"cum_work"` // hex
+	Bits       uint32 `json:"bits"`
 	Timestamp  int64  `json:"timestamp"`
 	Nonce      uint64 `json:"nonce"`
 	MerkleRoot string `json:"merkle_root"`
@@ -37,15 +38,18 @@ func HeaderDTOToBlock(h HeaderDTO) *blockchain.Block {
 		Nonce:     h.Nonce,
 		Target:    target,
 		Hash:      hashBytes, // []byte
+		Bits:      h.Bits,
 	}
 }
 
 func BlockIndexToHeaderDTO(bi *node.BlockIndex) HeaderDTO {
 	dto := HeaderDTO{
-		Hash:     bi.Hash,
-		PrevHash: bi.PrevHash,
-		Height:   bi.Height,
-		CumWork:  bi.CumWork,
+		Hash:      bi.Hash,
+		PrevHash:  bi.PrevHash,
+		Height:    bi.Height,
+		CumWork:   bi.CumWork,
+		Bits:      bi.Bits,
+		Timestamp: bi.Timestamp,
 	}
 
 	if bi.Block != nil { // body downloaded

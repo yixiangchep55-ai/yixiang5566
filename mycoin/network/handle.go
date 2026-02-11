@@ -633,10 +633,12 @@ func (h *Handler) handleHeaders(peer *Peer, msg *Message) {
 
 		// --- 建立 BlockIndex (保持原本邏輯) ---
 		bi := &node.BlockIndex{
-			Hash:     hdr.Hash,
-			PrevHash: hdr.PrevHash,
-			Height:   hdr.Height,
-			CumWork:  hdr.CumWork,
+			Hash:      hdr.Hash,
+			PrevHash:  hdr.PrevHash,
+			Height:    hdr.Height,
+			CumWork:   hdr.CumWork,
+			Bits:      hdr.Bits,      // 存入難度
+			Timestamp: hdr.Timestamp, // 存入時間
 		}
 		bi.CumWorkInt = new(big.Int)
 		if hdr.CumWork != "" {
