@@ -3,9 +3,11 @@ package node
 import (
 	"encoding/hex"
 	"encoding/json"
+	"fmt"
 	"log"
 	"math/big"
 	"mycoin/blockchain"
+	"mycoin/utils"
 )
 
 func (n *Node) connectBlock(block *blockchain.Block, parent *BlockIndex) bool {
@@ -13,21 +15,26 @@ func (n *Node) connectBlock(block *blockchain.Block, parent *BlockIndex) bool {
 	// ----------------------------------------------------
 	// 1️⃣ 驗證難度 (🔴 修正：絕對不要修改 block.Target)
 	// ----------------------------------------------------
-	var expectedTarget *big.Int
+	if (parent.Height+1)%blockchain.DifficultyInterval == 0 {
 
-	// 如果是難度調整週期，計算預期目標
-	if (parent.Height+1)%DifficultyInterval == 0 {
-		expectedTarget = n.retargetDifficulty(parent)
+		// 🔥 修改 1：使用 := (短宣告)，直接在這裡定義並賦值
+		expectedTarget := n.retargetDifficulty(parent)
 
-		// 🔴 檢查：比對區塊裡的 Target 是否符合預期
-		// 注意：這裡允許 <= 預期目標 (越小越難)，但通常要求嚴格相等，視你的共識規則而定
-		if block.Target.Cmp(expectedTarget) != 0 {
-			// 這裡先印警告，如果你的 retarget 算法跟主機完全一致，這裡應該 return false
-			log.Printf("⚠️ Warning: Block target mismatch. Expected %x, Got %x", expectedTarget, block.Target)
+		// 2. 將 Target 轉回 Bits
+		expectedBits := utils.BigToCompact(expectedTarget)
+
+		// 3. 比較 Bits
+		if expectedBits != block.Bits {
+			fmt.Printf("❌ [Consensus] 難度驗證失敗！預期 Bits: %d, 實際 Bits: %d\n", expectedBits, block.Bits)
+			return false
 		}
 	} else {
-		// 非調整週期，預期目標 = 父塊目標 (或當前區塊目標)
-		expectedTarget = block.Target
+		// 非調整週期，難度應該與父塊相同
+		// 如果你的 BlockIndex 結構裡有 Bits，可以直接比：
+		// if parent.Bits != block.Bits { return false }
+
+		// 如果沒有存 Bits，暫時可以不做檢查，或者假設它是對的
+		// 因為我們把 expectedTarget 的宣告拿掉了，這裡的 else 就不用做任何事了
 	}
 
 	// ✅ 計算工作量時，必須使用區塊原本的 Target

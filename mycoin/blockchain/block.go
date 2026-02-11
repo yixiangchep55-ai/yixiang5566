@@ -13,6 +13,8 @@ import (
 	"time"
 )
 
+const DifficultyInterval = 10
+
 // --------------------
 // Block Header
 // --------------------
