@@ -10,43 +10,42 @@ import (
 	"mycoin/utils"
 )
 
+// --------------------
+// 連接區塊 (核心共識邏輯)
+// --------------------
 func (n *Node) connectBlock(block *blockchain.Block, parent *BlockIndex) bool {
 
 	// ----------------------------------------------------
-	// 1️⃣ 驗證難度 (🔴 修正：絕對不要修改 block.Target)
+	// 1️⃣ 驗證難度 (Bits Check)
 	// ----------------------------------------------------
+	// 確保區塊頭裡的 Bits 符合協議要求
 	if (parent.Height+1)%blockchain.DifficultyInterval == 0 {
-
-		// 🔥 修改 1：使用 := (短宣告)，直接在這裡定義並賦值
+		// 🔴 調整週期：計算新難度
 		expectedTarget := n.retargetDifficulty(parent)
-
-		// 2. 將 Target 轉回 Bits
 		expectedBits := utils.BigToCompact(expectedTarget)
 
-		// 3. 比較 Bits
 		if expectedBits != block.Bits {
-			fmt.Printf("❌ [Consensus] 難度驗證失敗！預期 Bits: %d, 實際 Bits: %d\n", expectedBits, block.Bits)
+			fmt.Printf("❌ [Consensus] 難度驗證失敗 (Retarget)！預期: %d, 實際: %d\n", expectedBits, block.Bits)
 			return false
 		}
 	} else {
-		// 非調整週期，難度應該與父塊相同
-		// 如果你的 BlockIndex 結構裡有 Bits，可以直接比：
-		// if parent.Bits != block.Bits { return false }
-
-		// 如果沒有存 Bits，暫時可以不做檢查，或者假設它是對的
-		// 因為我們把 expectedTarget 的宣告拿掉了，這裡的 else 就不用做任何事了
+		// 🔴 非調整週期：必須跟父塊難度一模一樣
+		if block.Bits != parent.Bits {
+			fmt.Printf("❌ [Consensus] 難度驗證失敗 (Fixed)！預期: %d, 實際: %d\n", parent.Bits, block.Bits)
+			return false
+		}
 	}
 
-	// ✅ 計算工作量時，必須使用區塊原本的 Target
+	// 計算累積工作量
 	work := computeWork(block.Target)
 	cumWork := new(big.Int).Add(parent.CumWorkInt, work)
 
 	// ----------------------------------------------------
-	// 2️⃣ 驗證區塊 (UTXO)
+	// 2️⃣ 驗證區塊 (UTXO & Transaction) - 僅在非同步模式下嚴格檢查
 	// ----------------------------------------------------
+	// 注意：如果你還沒有實作 VerifyBlockWithUTXO，請保持註解，以免編譯失敗。
+	// 等你 UTXO 邏輯穩定了再開。
 	if !n.IsSyncing {
-		// 注意：如果是 Reorg 發生的分支區塊，這裡基於當前 UTXO 驗證可能會失敗
-		// 但通常為了安全，還是先驗證。如果 Reorg 邏輯夠強，可以移到 Reorg 內部做二次驗證。
 		err := VerifyBlockWithUTXO(block, parent.Block, n.UTXO)
 		if err != nil {
 			log.Println("❌ Block validation failed:", err)
@@ -61,13 +60,18 @@ func (n *Node) connectBlock(block *blockchain.Block, parent *BlockIndex) bool {
 	bi, ok := n.Blocks[hashHex]
 
 	if ok {
-		// FastSync 補洞：填入 Body
+		// 補齊 Body (FastSync 補洞)
 		bi.Block = block
 	} else {
 		bi = &BlockIndex{
-			Hash:       hashHex,
-			PrevHash:   parent.Hash,
-			Height:     parent.Height + 1,
+			Hash:     hashHex,
+			PrevHash: parent.Hash,
+			Height:   parent.Height + 1,
+
+			// 🔥 關鍵修正：必須存 Timestamp 和 Bits，否則下次 retarget 會算錯
+			Timestamp: block.Timestamp,
+			Bits:      block.Bits,
+
 			CumWork:    cumWork.String(),
 			CumWorkInt: cumWork,
 			Block:      block,
@@ -79,65 +83,52 @@ func (n *Node) connectBlock(block *blockchain.Block, parent *BlockIndex) bool {
 	}
 
 	// ----------------------------------------------------
-	// 4️⃣ 鏈選擇邏輯 (Chain Selection)
+	// 4️⃣ 持久化 (先存 DB，確保重啟不丟失)
 	// ----------------------------------------------------
-	chainSwitched := false // 標記是否切換了主鏈
+	n.DB.Put("blocks", hashHex, block.Serialize())
+	idxBytes, _ := json.Marshal(bi)
+	n.DB.Put("index", hashHex, idxBytes)
 
-	// 情況 A: 正常延伸主鏈
+	// ----------------------------------------------------
+	// 5️⃣ 鏈選擇邏輯 (Chain Selection)
+	// ----------------------------------------------------
+	chainSwitched := false
+
+	// 情況 A: 正常延伸主鏈 (Extend)
 	if parent == n.Best {
 		n.Best = bi
-		n.appendBlock(block) // 寫入區塊檔
-		n.indexTransactions(block, bi)
-		n.updateUTXO(block)         // 🟢 確保你有這個函數來更新 UTXO 集合！
-		n.removeConfirmedTxs(block) // 從 Mempool 移除
+
+		// 1. 更新內存 Chain 視圖
+		n.Chain = append(n.Chain, block)
+
+		// 2. 更新 UTXO (增量更新)
+		n.updateUTXO(block)
+
+		// 3. 清理 Mempool
+		n.removeConfirmedTxs(block)
 
 		log.Printf("⛏️ Main chain extended to height: %d (Hash: %s)\n", bi.Height, hashHex)
 		chainSwitched = true
 
-		// 剪枝邏輯
-		if n.Mode == "pruned" && bi.Height > PruneDepth {
-			n.PruneBlocks(bi.Height - PruneDepth)
-		}
+		// 剪枝邏輯 (可選)
+		// if n.Mode == "pruned" ...
 
 	} else if bi.CumWorkInt.Cmp(n.Best.CumWorkInt) > 0 {
-		// 情況 B: 觸發重組 (Reorg)
+		// 情況 B: 觸發重組 (Reorg) - 工作量 > 當前主鏈
 		log.Printf("🔁 REORG DETECTED! Current Best: %d, New Best: %d\n", n.Best.Height, bi.Height)
 
-		// 1. 執行重組：回滾舊鏈，應用新鏈
-		// 你的 reorgTo 應該負責處理 UTXO 的 Revert 和 Apply
+		// 1. 計算路徑 (需下方的輔助函數)
 		oldChain, newChain := n.reorgTo(bi)
 
+		// 2. 執行重組 (利用你 node.go 已有的 rebuildChain)
+		// 你的 rebuildChain 已經包含了 UTXO 重建和 Mempool 處理
 		n.rebuildChain(oldChain, newChain, bi)
-
-		// 2. 🔴 Mempool 修正：
-		// 舊鏈被遺棄 -> 交易復活 (加回 Mempool)
-		for _, o := range oldChain {
-			if o.Block != nil {
-				n.addTxsToMempool(o.Block.Transactions)
-			}
-		}
-
-		// 新鏈被確認 -> 交易移除 (從 Mempool 刪除)
-		for _, nBlock := range newChain {
-			if nBlock.Block != nil {
-				n.removeConfirmedTxs(nBlock.Block)
-			}
-		}
 
 		chainSwitched = true
 	} else {
 		// 情況 C: 側鏈 (Side Chain)
-		// 雖然是有效區塊，但工作量沒贏過主鏈，所以只存 Index，不切換 Best
-		// log.Printf("💡 收到側鏈區塊 高度 %d (未切換)\n", bi.Height)
+		// log.Printf("ℹ️ 收到側鏈區塊 高度 %d (未切換)\n", bi.Height)
 	}
-
-	// ----------------------------------------------------
-	// 5️⃣ 持久化
-	// ----------------------------------------------------
-	n.DB.Put("blocks", hashHex, block.Serialize())
-
-	idxBytes, _ := json.Marshal(bi)
-	n.DB.Put("index", hashHex, idxBytes)
 
 	// 只有當主鏈變更時，才更新 meta 中的 best
 	if chainSwitched {
@@ -149,7 +140,6 @@ func (n *Node) connectBlock(block *blockchain.Block, parent *BlockIndex) bool {
 	// ----------------------------------------------------
 	n.attachOrphans(hashHex)
 
-	// 返回是否成功接入 (只要驗證通過就算 true，不管有沒有切換主鏈)
 	return true
 }
 func (n *Node) attachOrphans(parentHash string) {
@@ -165,13 +155,18 @@ func (n *Node) attachOrphans(parentHash string) {
 }
 
 func (n *Node) reorgTo(newTip *BlockIndex) (oldChain []*BlockIndex, newChain []*BlockIndex) {
-
 	oldTip := n.Best
 
-	// 1️⃣ 定位共同祖先（common ancestor）
+	// 1️⃣ 定位共同祖先
 	a := oldTip
 	b := newTip
 
+	// 防禦性檢查：防止 nil 指標 (雖然理論上不該發生)
+	if a == nil || b == nil {
+		return nil, nil
+	}
+
+	// 讓高度較高的指針先往回退，直到兩者高度相同
 	for a.Height > b.Height {
 		a = a.Parent
 	}
@@ -179,37 +174,35 @@ func (n *Node) reorgTo(newTip *BlockIndex) (oldChain []*BlockIndex, newChain []*
 		b = b.Parent
 	}
 
-	// 直到找到共同祖先
+	// 兩者同時往回退，直到 Hash 相同
 	for a.Hash != b.Hash {
 		a = a.Parent
 		b = b.Parent
 	}
 	commonAncestor := a
 
-	// 2️⃣ oldChain = 从旧主链 tip 回滚到 common ancestor
+	// 2️⃣ oldChain = 從舊主鏈 Tip 回滾到 common ancestor (不含 ancestor)
 	cur := oldTip
 	for cur != commonAncestor {
 		oldChain = append(oldChain, cur)
 		cur = cur.Parent
 	}
 
-	// 3️⃣ newChain = 从 newTip 向上回溯到 common ancestor
-	// 但顺序是反的，需要反转
-	tmp := []*BlockIndex{}
+	// 3️⃣ newChain = 從 newTip 回溯到 common ancestor (不含 ancestor)
+	var tmp []*BlockIndex
 	cur = newTip
 	for cur != commonAncestor {
 		tmp = append(tmp, cur)
 		cur = cur.Parent
 	}
 
-	// 反转使顺序变成 commonAncestor → newTip
+	// 反轉 newChain (變成: Ancestor+1 -> ... -> NewTip)
+	// 這樣執行交易時順序才對
 	for i := len(tmp) - 1; i >= 0; i-- {
 		newChain = append(newChain, tmp[i])
 	}
 
-	// 4️⃣ 更新主链 tip
-	n.Best = newTip
-
+	// ⚠️ 注意：這裡不要更新 n.Best，讓調用者 (connectBlock) 去更新
 	return oldChain, newChain
 }
 

@@ -45,31 +45,24 @@ func (n *Node) retargetDifficulty(last *BlockIndex) *big.Int {
 	}
 
 	// ---------------------------------------------------------
-	// ⭐ 關鍵修改：安全獲取 oldTarget
+	// 🔥🔥🔥 關鍵修正：從 Bits 還原 OldTarget 🔥🔥🔥
 	// ---------------------------------------------------------
-	var oldTarget *big.Int
-	if last.Block != nil {
-		oldTarget = last.Block.Target
-	} else {
-		// 如果沒有 Block 體，我們暫時沿用當前節點的 Target
-		// (為了更精確，建議以後在 BlockIndex 裡也存 Target/Bits)
-		// 這裡做一個防崩潰處理：
-		oldTarget = n.Target
-		// 更好的做法是去讀 last.Bits 解碼，但暫時先這樣防止 Panic
-	}
+	// 不管 Block 是否為 nil，BlockIndex 裡一定有 Bits (Header 裡自帶)
+	oldTarget := utils.CompactToBig(last.Bits)
 
+	// 計算新 Target
 	// newTarget = oldTarget * actualTimespan / IntervalTimespan
 	newTarget := new(big.Int).Mul(oldTarget, big.NewInt(actualTimespan))
-	newTarget.Div(newTarget, big.NewInt(int64(IntervalTimespan)))
+	newTarget.Div(newTarget, big.NewInt(IntervalTimespan))
 
-	// 最大目標（最小難度）檢查
-	// 這裡直接用 n.Target (創世難度)，它通常就是 MaxTarget
+	// 最大目標檢查 (不能比創世難度更簡單)
 	if newTarget.Cmp(n.Target) > 0 {
 		newTarget.Set(n.Target)
 	}
 
-	fmt.Printf("⏱ Difficulty retarget:\n actualTimespan = %d\n old = %s\n new = %s\n",
-		actualTimespan, utils.FormatTargetHex(oldTarget), utils.FormatTargetHex(newTarget),
+	fmt.Printf("⏱ [Consensus] 難度調整: Span %ds (預期 %ds) | Old: %x -> New: %x\n",
+		actualTimespan, IntervalTimespan,
+		oldTarget, newTarget, // 這裡可以縮短顯示，不然 log 會很長
 	)
 
 	return newTarget

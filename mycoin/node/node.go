@@ -260,56 +260,58 @@ func (n *Node) appendBlock(block *blockchain.Block) {
 // 添加新区块
 // --------------------
 func (n *Node) AddBlock(block *blockchain.Block) bool {
-	fmt.Printf("\n📥 [Node] 嘗試處理區塊: 高度 %d, Hash: %x\n", block.Height, block.Hash)
 	hashHex := hex.EncodeToString(block.Hash)
 	prevHex := hex.EncodeToString(block.PrevHash)
 
-	// A. 检查是否已存在 (這部分保持不變)
+	fmt.Printf("\n📥 [Node] 收到區塊處理請求: 高度 %d, Hash: %s\n", block.Height, hashHex)
+
+	// ---------------------------------------------------------
+	// 1. 檢查是否已存在 (Deduplication)
+	// ---------------------------------------------------------
 	if bi, exists := n.Blocks[hashHex]; exists {
+		// 情況 A: 我們之前只收到了 Header (索引存在)，現在收到了 Body
 		if bi.Block == nil {
-			fmt.Printf("📥 收到區塊體，補齊資料: 高度 %d\n", bi.Height)
+			fmt.Printf("📦 收到區塊體，補齊資料: 高度 %d\n", bi.Height)
 			bi.Block = block
-		} else {
-			return false
-		}
-	} else {
-		// B. 如果連索引都沒有，建立新索引
 
-		// 1. 計算工作量
-		cumWork := WorkFromTarget(block.Target)
-
-		newBi := &BlockIndex{
-			Hash:     hashHex,
-			PrevHash: prevHex,
-			Height:   block.Height,
-			Block:    block,
-
-			// 🔥🔥🔥 關鍵修正：必須把時間戳存入索引 🔥🔥🔥
-			Timestamp: block.Timestamp,
-
-			// 建議也把 Bits (Target壓縮版) 存入，如果你的 BlockIndex 結構有加的話
-			// Bits: block.Bits,
-
-			CumWorkInt: cumWork,
-			Children:   []*BlockIndex{},
+			// 補齊後，其實應該檢查這是否會觸發 Reorg (例如 FastSync 結束時)
+			// 但為了簡化，我們這裡先回傳 true，等待下一個新塊來觸發延伸
+			return true
 		}
 
-		// 補上字串版工作量
-		newBi.CumWork = newBi.CumWorkInt.String()
-
-		n.Blocks[hashHex] = newBi
+		// 情況 B: 已經完全存在了，直接忽略
+		return true
 	}
 
-	// ... (後面的父區塊檢查與 connectBlock 保持不變) ...
-	parent, parentExists := n.Blocks[prevHex]
+	// ---------------------------------------------------------
+	// 2. 檢查父塊是否存在 (Orphan Check)
+	// ---------------------------------------------------------
+	parentIndex, exists := n.Blocks[prevHex]
+	if !exists {
+		// 這是孤兒塊，存入孤兒池
+		log.Printf("⚠️ 發現孤塊 (缺少父塊 %s): 高度 %d\n", prevHex, block.Height)
 
-	if !parentExists {
-		log.Printf("📦 发现孤块 (缺少父块 %s): %s\n", prevHex, hashHex)
-		n.Orphans[prevHex] = append(n.Orphans[prevHex], block)
+		// 呼叫你原本的 AddOrphan 函數
+		n.AddOrphan(block)
+
+		// 注意：這裡 return false 是為了告訴調用者 (handleBlock)
+		// 「這個塊還沒連上主鏈」，這樣 handleBlock 才會去觸發 GetHeaders 同步
 		return false
 	}
 
-	return n.connectBlock(block, parent)
+	// ---------------------------------------------------------
+	// 3. 交給 connectBlock 進行核心處理
+	// ---------------------------------------------------------
+	// 🔥 這裡才是重點！
+	// 驗證難度、建立 BlockIndex、計算 CumWork、處理 Reorg 全部都在這裡面做
+	success := n.connectBlock(block, parentIndex)
+
+	if !success {
+		log.Printf("❌ 區塊連接失敗: %s\n", hashHex)
+		return false
+	}
+
+	return true
 }
 
 // --------------------

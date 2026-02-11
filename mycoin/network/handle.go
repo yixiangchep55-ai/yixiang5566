@@ -267,6 +267,10 @@ func (h *Handler) handleBlock(peer *Peer, msg *Message) {
 	if parent == nil {
 		fmt.Printf("⚠️ 缺少父塊 Header %s，存入孤立池\n", prevHex)
 		h.Node.AddOrphan(blk)
+
+		locators := h.buildBlockLocator()
+		fmt.Printf("🔍 [Debug] 發送 GetHeaders，Locator 第一個 Hash: %s (總數: %d)\n",
+			locators[0], len(locators))
 		// 觸發 Header 下載
 		peer.Send(Message{
 			Type: MsgGetHeaders,
