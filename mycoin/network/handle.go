@@ -642,7 +642,7 @@ func (h *Handler) handleHeaders(peer *Peer, msg *Message) {
 		}
 		bi.CumWorkInt = new(big.Int)
 		if hdr.CumWork != "" {
-			bi.CumWorkInt.SetString(hdr.CumWork, 10)
+			bi.CumWorkInt.SetString(hdr.CumWork, 16)
 		} else {
 			bi.CumWorkInt.SetInt64(0)
 		}
