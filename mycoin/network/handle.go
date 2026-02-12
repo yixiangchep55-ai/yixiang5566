@@ -734,7 +734,12 @@ func (h *Handler) requestMissingBlockBodies(peer *Peer) {
 		return
 	}
 
-	// 3. 無缺塊，觸發完成
+	if !h.Node.IsSyncing {
+		// fmt.Println("✅ 檢查完畢，區塊完整，無需動作。")
+		return
+	}
+
+	// 3. 只有當我們「真的還在同步模式」且「發現沒缺塊了」，才觸發完成邏輯
 	fmt.Println("✅ 所有區塊內容已齊全，觸發同步完成...")
 	h.finishSyncing()
 }
