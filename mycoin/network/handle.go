@@ -120,43 +120,47 @@ func (h *Handler) handleVersion(peer *Peer, msg *Message) {
 func (h *Handler) handleVerAck(peer *Peer, msg *Message) {
 	if peer.State >= StateVersionRecv {
 
-		// --- 1. 提取當前連線的 IP (去掉 Port) ---
+		// 1. 提取 IP
 		host, _, _ := net.SplitHostPort(peer.Addr)
 
-		h.Network.mu.Lock() // 🔒 使用鎖保護 Peers 列表
+		h.Network.mu.Lock() // 🔒 上鎖
 
-		// --- 2. 檢查是否已有「其他」相同 IP 的 Peer 在名單中 ---
-		isDuplicate := false
+		// 2. 尋找是否有「舊的」相同 IP 連線
+		var oldPeer *Peer
 		for addr, existingPeer := range h.Network.Peers {
-			// 🔥 關鍵修正：跳過正在處理的自己！
-			// 如果地址完全一樣，代表這就是當前連線，不是「重複」的連線
+			// 跳過自己
 			if addr == peer.Addr {
 				continue
 			}
 
 			exHost, _, _ := net.SplitHostPort(existingPeer.Addr)
 			if exHost == host {
-				isDuplicate = true
+				oldPeer = existingPeer // 找到了舊連線！
 				break
 			}
 		}
 
-		if isDuplicate {
-			h.Network.mu.Unlock()
-			log.Printf("🚫 拒絕來自 %s 的重複連線 (IP 已存在)\n", host)
-			// 使用底層 Conn 關閉，避免 undefined 錯誤
-			if peer.Conn != nil {
-				peer.Conn.Close()
-			}
-			return
+		// 🔥🔥🔥 [關鍵修改]：採取「喜新厭舊」策略 🔥🔥🔥
+		if oldPeer != nil {
+			log.Printf("🔄 檢測到來自 %s 的重連 (IP 已存在)，正在清理舊連線 %s...\n", host, oldPeer.Addr)
+
+			// 1. 從 Map 中移除舊的 Key
+			delete(h.Network.Peers, oldPeer.Addr)
+
+			// 2. 關閉舊連線的 Socket (這會觸發舊連線的 disconnect 清理邏輯)
+			// 注意：我們在 Lock 裡面做 delete 是安全的，Close 是異步的
+			go oldPeer.Close()
+
+			// 3. ⚠️ 重點：我們不 return！讓程式繼續往下跑，去註冊這個新的連線
 		}
 
-		// --- 3. 如果是全新 IP，才繼續原本邏輯 ---
+		// --- 3. 註冊新連線 (原本的邏輯) ---
 		peer.State = StateActive
 		log.Println("✅ peer active:", peer.Addr)
 
 		h.Network.Peers[peer.Addr] = peer
 		currentCount := len(h.Network.Peers)
+
 		h.Network.mu.Unlock() // 🔓 解鎖
 
 		fmt.Printf("🔒 [Network] 已將 %s 強制加入廣播名單，目前連線數: %d\n", peer.Addr, currentCount)
