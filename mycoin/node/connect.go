@@ -96,6 +96,15 @@ func (n *Node) connectBlock(block *blockchain.Block, parent *BlockIndex) bool {
 	idxBytes, _ := json.Marshal(bi)
 	n.DB.Put("index", hashHex, idxBytes)
 
+	if bi.Height >= n.Best.Height { // 只在高度接近時印出，避免洗版
+		fmt.Printf("⚖️ [Chain Selection] Local Best: %d (Work: %s) vs New Block: %d (Work: %s)\n",
+			n.Best.Height,
+			n.Best.CumWorkInt.Text(16), // 印出 16 進制工作量
+			bi.Height,
+			bi.CumWorkInt.Text(16), // 印出 16 進制工作量
+		)
+	}
+
 	// ----------------------------------------------------
 	// 5️⃣ 鏈選擇邏輯 (Chain Selection)
 	// ----------------------------------------------------

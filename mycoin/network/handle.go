@@ -240,12 +240,16 @@ func (h *Handler) handleBlock(peer *Peer, msg *Message) {
 	alreadyHasBody := (bi != nil && bi.Block != nil)
 
 	if alreadyHasBody {
-		// [修復問題1]：即使已經有了，如果是同步模式，也要檢查是不是該抓下一塊了！
-		// 很多時候是因為收到自己廣播的回音，導致這裡直接 return 而忘了抓下一塊
-		if h.Node.IsSyncing {
+		// 只有當我們還在同步模式，且收到這個塊所在的鏈「比我們當前的最強鏈工作量更大」時
+		// 才觸發補洞邏輯。這樣可以避免被低難度的長鏈干擾。
+		// bi.CumWorkInt.Cmp(...) > 0 代表 bi 的工作量大於 Best
+		if h.Node.IsSyncing && bi.CumWorkInt.Cmp(h.Node.Best.CumWorkInt) > 0 {
+			fmt.Printf("🔄 [Sync] 收到已知區塊 %d，但工作量更高，觸發補缺檢查...\n", blk.Height)
 			h.requestMissingBlockBodies(peer)
 		}
-		return // 已經處理過，直接返回
+
+		// 已經有了，且不需要處理，直接返回
+		return
 	}
 
 	fmt.Printf("🌐 [Network] 收到區塊: 高度 %d, Hash: %s\n", blk.Height, hashHex)
