@@ -170,55 +170,67 @@ func (n *Node) attachOrphans(parentHash string) {
 	}
 }
 
+// 安全版的 reorgTo，防止 nil pointer panic
 func (n *Node) reorgTo(newTip *BlockIndex) (oldChain []*BlockIndex, newChain []*BlockIndex) {
 	oldTip := n.Best
 
-	// 1️⃣ 定位共同祖先
+	// 1. 防禦性檢查：如果任一端點為空，無法重組
+	if oldTip == nil || newTip == nil {
+		return nil, nil
+	}
+
 	a := oldTip
 	b := newTip
 
-	// 防禦性檢查：防止 nil 指標 (雖然理論上不該發生)
+	// 2. 尋找共同祖先 (加入 nil 檢查防止崩潰)
+	// 讓高度較高的指針先往回退
+	for a.Height > b.Height {
+		a = a.Parent
+		if a == nil {
+			return nil, nil
+		} // 🔥 安全檢查移到這裡
+	}
+
+	for b.Height > a.Height {
+		b = b.Parent
+		if b == nil {
+			return nil, nil
+		} // 🔥 安全檢查移到這裡
+	}
+
+	// 3. 兩者同時往回退，直到 Hash 相同
+	for a != nil && b != nil && a != b {
+		a = a.Parent
+		b = b.Parent
+	}
+
+	// 如果找不到共同祖先（斷鏈），直接返回
 	if a == nil || b == nil {
 		return nil, nil
 	}
 
-	// 讓高度較高的指針先往回退，直到兩者高度相同
-	for a.Height > b.Height {
-		a = a.Parent
-	}
-	for b.Height > a.Height {
-		b = b.Parent
-	}
-
-	// 兩者同時往回退，直到 Hash 相同
-	for a.Hash != b.Hash {
-		a = a.Parent
-		b = b.Parent
-	}
 	commonAncestor := a
 
-	// 2️⃣ oldChain = 從舊主鏈 Tip 回滾到 common ancestor (不含 ancestor)
+	// 4. 構建 oldChain (回滾路徑)
 	cur := oldTip
-	for cur != commonAncestor {
+	for cur != nil && cur != commonAncestor {
 		oldChain = append(oldChain, cur)
 		cur = cur.Parent
 	}
 
-	// 3️⃣ newChain = 從 newTip 回溯到 common ancestor (不含 ancestor)
+	// 5. 構建 newChain (前進路徑)
 	var tmp []*BlockIndex
 	cur = newTip
-	for cur != commonAncestor {
+	for cur != nil && cur != commonAncestor {
 		tmp = append(tmp, cur)
 		cur = cur.Parent
 	}
 
-	// 反轉 newChain (變成: Ancestor+1 -> ... -> NewTip)
-	// 這樣執行交易時順序才對
+	// 反轉 newChain
 	for i := len(tmp) - 1; i >= 0; i-- {
 		newChain = append(newChain, tmp[i])
 	}
 
-	// ⚠️ 注意：這裡不要更新 n.Best，讓調用者 (connectBlock) 去更新
 	return oldChain, newChain
 }
 

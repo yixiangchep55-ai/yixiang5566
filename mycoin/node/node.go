@@ -13,6 +13,7 @@ import (
 	"mycoin/utils"
 	"os"
 	"path/filepath"
+	"sync"
 	"time"
 )
 
@@ -24,6 +25,7 @@ type Node struct {
 	Chain   []*blockchain.Block
 	Mempool *mempool.Mempool
 	UTXO    *blockchain.UTXOSet
+	mu      sync.Mutex
 
 	// ✔ BlockIndex 数据库（hashHex → block index）
 	Blocks map[string]*BlockIndex
@@ -260,6 +262,8 @@ func (n *Node) appendBlock(block *blockchain.Block) {
 // 添加新区块
 // --------------------
 func (n *Node) AddBlock(block *blockchain.Block) bool {
+	n.mu.Lock()
+	defer n.mu.Unlock()
 	hashHex := hex.EncodeToString(block.Hash)
 	prevHex := hex.EncodeToString(block.PrevHash)
 
