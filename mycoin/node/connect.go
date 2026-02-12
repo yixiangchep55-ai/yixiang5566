@@ -57,28 +57,28 @@ func (n *Node) connectBlock(block *blockchain.Block, parent *BlockIndex) bool {
 	// 3️⃣ 創建或更新 BlockIndex
 	// ----------------------------------------------------
 	hashHex := hex.EncodeToString(block.Hash)
-	bi, exists := n.Blocks[hashHex] // 改名 exists 比較直觀
+	bi, exists := n.Blocks[hashHex]
 
 	if exists {
-		// 情況 A: 索引已存在 (Header 同步過，或重複收到)
-		// 我們必須補齊所有可能的缺漏數據
+		// 情況 A: 索引已存在
 		bi.Block = block
-		bi.Bits = block.Bits           // 🔥 強制更新 Bits (修復 0 的關鍵)
-		bi.Timestamp = block.Timestamp // 🔥 強制更新時間戳
+		bi.Bits = block.Bits
+		bi.Timestamp = block.Timestamp
+		bi.Parent = parent // 確保父子關係正確
 
-		// 如果之前沒有 CumWork (例如孤塊亂序)，現在補上
-		if bi.CumWorkInt == nil {
-			bi.CumWorkInt = cumWork
-			bi.CumWork = cumWork.String()
-		}
+		// 🔥 修正：強制更新工作量，不要用 if bi.CumWorkInt == nil 判斷
+		// 因為 Header 同步時算的可能不準，或當時沒拿到 parent
+		bi.CumWorkInt = cumWork
+		bi.CumWork = cumWork.String()
+
 	} else {
-		// 情況 B: 全新區塊 (自己挖的，或沒經過 Header 同步)
+		// 情況 B: 全新區塊
 		bi = &BlockIndex{
 			Hash:       hashHex,
 			PrevHash:   parent.Hash,
 			Height:     parent.Height + 1,
-			Timestamp:  block.Timestamp, // ✅ 正確
-			Bits:       block.Bits,      // ✅ 正確
+			Timestamp:  block.Timestamp,
+			Bits:       block.Bits,
 			CumWork:    cumWork.String(),
 			CumWorkInt: cumWork,
 			Block:      block,
@@ -86,9 +86,22 @@ func (n *Node) connectBlock(block *blockchain.Block, parent *BlockIndex) bool {
 			Children:   []*BlockIndex{},
 		}
 		n.Blocks[hashHex] = bi
-		parent.Children = append(parent.Children, bi)
 	}
 
+	// 建立父子連結（不論 exists 與否都確保一下）
+	if parent != nil {
+		// 檢查是否已經在 Children 裡，避免重複添加
+		alreadyChild := false
+		for _, child := range parent.Children {
+			if child.Hash == hashHex {
+				alreadyChild = true
+				break
+			}
+		}
+		if !alreadyChild {
+			parent.Children = append(parent.Children, bi)
+		}
+	}
 	// ----------------------------------------------------
 	// 4️⃣ 持久化 (先存 DB，確保重啟不丟失)
 	// ----------------------------------------------------

@@ -84,8 +84,20 @@ func (n *Node) GetBlockByHash(hashHex string) *blockchain.Block {
 }
 
 func computeWork(target *big.Int) *big.Int {
+	if target == nil || target.Sign() <= 0 {
+		return big.NewInt(1) // 避免除以 0 或負數
+	}
+
 	max := new(big.Int).Lsh(big.NewInt(1), 256)
-	return new(big.Int).Div(max, new(big.Int).Add(target, big.NewInt(1)))
+	denom := new(big.Int).Add(target, big.NewInt(1))
+	work := new(big.Int).Div(max, denom)
+
+	// 🔥 保險：如果算出來是 0（難度極低時），強制給 1
+	// 這樣累積工作量才會增加，Best Chain 才會切換
+	if work.Sign() == 0 {
+		return big.NewInt(1)
+	}
+	return work
 }
 
 func utxoKey(txid string, index int) string {
