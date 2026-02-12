@@ -8,6 +8,7 @@ import (
 	"math/big"
 	"mycoin/blockchain"
 	"mycoin/node"
+	"net"
 
 	"github.com/mitchellh/mapstructure"
 )
@@ -16,6 +17,12 @@ type Handler struct {
 	Node         *node.Node
 	Network      *Network
 	LocalVersion VersionPayload
+}
+
+func (p *Peer) Close() {
+	if p.Conn != nil {
+		p.Conn.Close()
+	}
 }
 
 func NewHandler(n *node.Node) *Handler {
@@ -112,20 +119,43 @@ func (h *Handler) handleVersion(peer *Peer, msg *Message) {
 // ======================
 func (h *Handler) handleVerAck(peer *Peer, msg *Message) {
 	if peer.State >= StateVersionRecv {
+
+		// --- 1. 提取當前連線的 IP (去掉 Port) ---
+		host, _, _ := net.SplitHostPort(peer.Addr)
+
+		h.Network.mu.Lock() // 🔒 使用鎖保護 Peers 列表
+
+		// --- 2. 檢查是否已有相同 IP 的 Peer 在名單中 ---
+		isDuplicate := false
+		for _, existingPeer := range h.Network.Peers {
+			exHost, _, _ := net.SplitHostPort(existingPeer.Addr)
+			if exHost == host {
+				isDuplicate = true
+				break
+			}
+		}
+
+		if isDuplicate {
+			h.Network.mu.Unlock()
+			log.Printf("🚫 拒絕來自 %s 的重複連線 (IP 已存在)\n", host)
+			peer.Close() // 關閉連線
+			return
+		}
+
+		// --- 3. 如果是全新 IP，才繼續原本邏輯 ---
 		peer.State = StateActive
 		log.Println("✅ peer active:", peer.Addr)
 
-		h.Network.mu.Lock()
 		h.Network.Peers[peer.Addr] = peer
-		h.Network.mu.Unlock()
+		currentCount := len(h.Network.Peers)
+		h.Network.mu.Unlock() // 🔓 解鎖
 
-		// 為了確認，我們印出來看看
-		fmt.Printf("🔒 [Network] 已將 %s 強制加入廣播名單，目前連線數: %d\n", peer.Addr, len(h.Network.Peers))
+		fmt.Printf("🔒 [Network] 已將 %s 強制加入廣播名單，目前連線數: %d\n", peer.Addr, currentCount)
 
-		// 🌐 地址发现
+		// 🌐 地址發現
 		peer.Send(Message{Type: MsgGetAddr})
 
-		// 🧱 headers-first 同步启动
+		// 🧱 headers-first 同步啟動
 		peer.Send(Message{
 			Type: MsgGetHeaders,
 			Data: GetHeadersPayload{
@@ -618,31 +648,31 @@ func (h *Handler) handleHeaders(peer *Peer, msg *Message) {
 	headersCount := len(payload.Headers)
 	fmt.Printf("📥 Received %d headers from peer\n", headersCount)
 
-	// 1. 如果對方回傳 0 個，直接結束同步
+	// 1️⃣ 情況 A：對方完全沒資料 (常見於雙方都是高度 0)
 	if headersCount == 0 {
 		fmt.Println("✅ Headers fully synced (Peer sent 0 headers)")
 		h.Node.HeadersSynced = true
+		// 觸發補齊 Body 檢查，若不缺塊，它會幫我們 finishSyncing
 		h.requestMissingBlockBodies(peer)
 		return
 	}
 
-	// 2. 處理 Header，並統計「新區塊」
-	addedCount := 0 // 🔥 這是關鍵計數器！
+	addedCount := 0
 
 	for _, hdr := range payload.Headers {
-		// 如果資料庫已經有這個塊了，直接跳過！
+		// 如果資料庫已經有這個塊了，直接跳過
 		if _, ok := h.Node.Blocks[hdr.Hash]; ok {
 			continue
 		}
 
-		// --- 建立 BlockIndex (保持原本邏輯) ---
+		// --- 建立 BlockIndex ---
 		bi := &node.BlockIndex{
 			Hash:      hdr.Hash,
 			PrevHash:  hdr.PrevHash,
 			Height:    hdr.Height,
 			CumWork:   hdr.CumWork,
-			Bits:      hdr.Bits,      // 存入難度
-			Timestamp: hdr.Timestamp, // 存入時間
+			Bits:      hdr.Bits,
+			Timestamp: hdr.Timestamp,
 		}
 		bi.CumWorkInt = new(big.Int)
 		if hdr.CumWork != "" {
@@ -651,56 +681,59 @@ func (h *Handler) handleHeaders(peer *Peer, msg *Message) {
 			bi.CumWorkInt.SetInt64(0)
 		}
 
-		// 寫入內存
 		h.Node.Blocks[hdr.Hash] = bi
 
-		// 連結父子關係
 		if parent, ok := h.Node.Blocks[hdr.PrevHash]; ok {
 			bi.Parent = parent
 			parent.Children = append(parent.Children, bi)
 		}
 
-		// 更新 Best
 		if h.Node.Best == nil || bi.CumWorkInt.Cmp(h.Node.Best.CumWorkInt) > 0 {
 			h.Node.Best = bi
 		}
 
-		// 處理孤塊
-		if orphans, ok := h.Node.Orphans[hdr.Hash]; ok {
-			for _, orphan := range orphans {
-				h.handleBlock(peer, &Message{Type: MsgBlock, Data: orphan})
-			}
-			delete(h.Node.Orphans, hdr.Hash)
-		}
-
-		// 🔥 成功加入一個「新」塊，計數器 +1
 		addedCount++
 	}
 
-	// 3. 🛑 聰明的請求邏輯 (Brake Mechanism)
-	// 只有當我們「真的學到了新東西」時，才繼續要！
-	if addedCount > 0 {
-		fmt.Printf("🔄 收納了 %d 個新 Header (總共 %d)，繼續索取更多...\n", addedCount, headersCount)
+	// =================================================================
+	// 🔥🔥🔥 [關鍵修正邏輯] 🔥🔥🔥
+	// =================================================================
 
-		peer.Send(Message{
-			Type: MsgGetHeaders,
-			Data: GetHeadersPayload{
-				// 因為加入了新塊，Locator 會更新，指向更後面的位置
-				Locators: h.buildBlockLocator(),
-			},
-		})
-	} else {
-		// 如果 addedCount == 0，代表索引都已經有了
-		fmt.Println("✅ 索引已存在，檢查是否缺少區塊體...")
+	// 2️⃣ 情況 B：收到了 Header，但「全部都是重複的」 (addedCount == 0)
+	// 這代表我們已經追上對方的鏈頭了
+	if addedCount == 0 && headersCount > 0 {
+		fmt.Println("✅ All received headers were already known. Headers sync complete.")
+		h.Node.HeadersSynced = true
+		h.requestMissingBlockBodies(peer)
+		return
+	}
 
-		// 🔥 關鍵：檢查目前 Best 鏈路徑上是否缺 Body
-		if h.Node.HasMissingBodies() {
-			fmt.Println("🔄 發現有頭無身的區塊，開始請求區塊體...")
-			h.requestMissingBlockBodies(peer)
-		} else {
-			fmt.Println("✅ Headers 與 Bodies 皆已同步完成！")
-			h.Node.HeadersSynced = true
+	// 3️⃣ 情況 C：收到了新 Header，且數量很多（例如 500 個），代表還沒拿完，手動請求下一批
+	if addedCount > 0 && headersCount >= 500 {
+		fmt.Println("🔄 Still more headers to download, requesting next batch...")
+
+		// --- 手動內聯請求邏輯，不使用輔助函數 ---
+		nextReq := GetHeadersPayload{
+			Locators: []string{h.Node.Best.Hash}, // 從我們目前最強的塊開始要
 		}
+
+		// 使用你專案現有的 encode 函數進行編碼
+		data, err := encode(nextReq)
+		if err == nil {
+			// 直接透過 peer 發送
+			peer.Send(Message{
+				Type: MsgGetHeaders,
+				Data: data,
+			})
+		}
+		return
+	}
+
+	// 4️⃣ 情況 D：收到了新 Header，但數量不足一批，代表這是最後一批
+	if addedCount > 0 {
+		fmt.Printf("✅ Added %d new headers. Entering body sync phase...\n", addedCount)
+		h.Node.HeadersSynced = true
+		h.requestMissingBlockBodies(peer)
 	}
 }
 
@@ -805,4 +838,8 @@ func (h *Handler) BroadcastNewBlock(b *blockchain.Block) {
 	if activeCount == 0 {
 		fmt.Println("⚠️ [警告] 廣播失敗：沒有任何活躍的 Peer (StateActive)！")
 	}
+}
+
+func encode(v interface{}) ([]byte, error) {
+	return json.Marshal(v)
 }
