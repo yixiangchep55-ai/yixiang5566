@@ -713,7 +713,7 @@ func (h *Handler) handleHeaders(peer *Peer, msg *Message) {
 		fmt.Println("✅ All received headers were already known. Headers sync complete.")
 		h.Node.HeadersSynced = true
 
-		// 🔥 同樣檢查是否可以畢業
+		// 🔥 同樣檢查是否可以直接進入挖礦狀態
 		if !h.Node.HasMissingBodies() {
 			fmt.Println("✨ 資料已齊全，切換至已同步狀態...")
 			h.finishSyncing()
@@ -723,11 +723,11 @@ func (h *Handler) handleHeaders(peer *Peer, msg *Message) {
 		return
 	}
 
-	// 3️⃣ 情況 C：收到了新 Header，且數量很多，繼續請求下一批 (保持不變)
+	// 3️⃣ 情況 C：收到了新 Header，且數量很多，繼續請求下一批
 	if addedCount > 0 && headersCount >= 500 {
 		fmt.Println("🔄 Still more headers to download, requesting next batch...")
 		nextReq := GetHeadersPayload{
-			Locators: h.buildBlockLocator(), // 建議改用 locator
+			Locators: h.buildBlockLocator(),
 		}
 		data, _ := json.Marshal(nextReq)
 		peer.Send(Message{Type: MsgGetHeaders, Data: data})
