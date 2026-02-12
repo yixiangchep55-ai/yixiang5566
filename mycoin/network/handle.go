@@ -709,36 +709,32 @@ func (h *Handler) handleHeaders(peer *Peer, msg *Message) {
 	// =================================================================
 
 	// 2️⃣ 情況 B：收到了 Header，但「全部都是重複的」 (addedCount == 0)
-	// 這代表我們已經追上對方的鏈頭了
 	if addedCount == 0 && headersCount > 0 {
 		fmt.Println("✅ All received headers were already known. Headers sync complete.")
 		h.Node.HeadersSynced = true
-		h.requestMissingBlockBodies(peer)
+
+		// 🔥 同樣檢查是否可以畢業
+		if !h.Node.HasMissingBodies() {
+			fmt.Println("✨ 資料已齊全，切換至已同步狀態...")
+			h.finishSyncing()
+		} else {
+			h.requestMissingBlockBodies(peer)
+		}
 		return
 	}
 
-	// 3️⃣ 情況 C：收到了新 Header，且數量很多（例如 500 個），代表還沒拿完，手動請求下一批
+	// 3️⃣ 情況 C：收到了新 Header，且數量很多，繼續請求下一批 (保持不變)
 	if addedCount > 0 && headersCount >= 500 {
 		fmt.Println("🔄 Still more headers to download, requesting next batch...")
-
-		// --- 手動內聯請求邏輯，不使用輔助函數 ---
 		nextReq := GetHeadersPayload{
-			Locators: []string{h.Node.Best.Hash}, // 從我們目前最強的塊開始要
+			Locators: h.buildBlockLocator(), // 建議改用 locator
 		}
-
-		// 使用你專案現有的 encode 函數進行編碼
-		data, err := encode(nextReq)
-		if err == nil {
-			// 直接透過 peer 發送
-			peer.Send(Message{
-				Type: MsgGetHeaders,
-				Data: data,
-			})
-		}
+		data, _ := json.Marshal(nextReq)
+		peer.Send(Message{Type: MsgGetHeaders, Data: data})
 		return
 	}
 
-	// 4️⃣ 情況 D：收到了新 Header，但數量不足一批，代表這是最後一批
+	// 4️⃣ 情況 D：最後一批新 Header
 	if addedCount > 0 {
 		fmt.Printf("✅ Added %d new headers. Entering body sync phase...\n", addedCount)
 		h.Node.HeadersSynced = true
