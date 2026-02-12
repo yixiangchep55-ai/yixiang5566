@@ -69,7 +69,7 @@ func (n *Node) connectBlock(block *blockchain.Block, parent *BlockIndex) bool {
 		// 🔥 修正：強制更新工作量，不要用 if bi.CumWorkInt == nil 判斷
 		// 因為 Header 同步時算的可能不準，或當時沒拿到 parent
 		bi.CumWorkInt = cumWork
-		bi.CumWork = cumWork.String()
+		bi.CumWork = cumWork.Text(16)
 
 	} else {
 		// 情況 B: 全新區塊
@@ -79,7 +79,7 @@ func (n *Node) connectBlock(block *blockchain.Block, parent *BlockIndex) bool {
 			Height:     parent.Height + 1,
 			Timestamp:  block.Timestamp,
 			Bits:       block.Bits,
-			CumWork:    cumWork.String(),
+			CumWork:    cumWork.Text(16),
 			CumWorkInt: cumWork,
 			Block:      block,
 			Parent:     parent,
