@@ -125,9 +125,15 @@ func (h *Handler) handleVerAck(peer *Peer, msg *Message) {
 
 		h.Network.mu.Lock() // 🔒 使用鎖保護 Peers 列表
 
-		// --- 2. 檢查是否已有相同 IP 的 Peer 在名單中 ---
+		// --- 2. 檢查是否已有「其他」相同 IP 的 Peer 在名單中 ---
 		isDuplicate := false
-		for _, existingPeer := range h.Network.Peers {
+		for addr, existingPeer := range h.Network.Peers {
+			// 🔥 關鍵修正：跳過正在處理的自己！
+			// 如果地址完全一樣，代表這就是當前連線，不是「重複」的連線
+			if addr == peer.Addr {
+				continue
+			}
+
 			exHost, _, _ := net.SplitHostPort(existingPeer.Addr)
 			if exHost == host {
 				isDuplicate = true
@@ -138,7 +144,10 @@ func (h *Handler) handleVerAck(peer *Peer, msg *Message) {
 		if isDuplicate {
 			h.Network.mu.Unlock()
 			log.Printf("🚫 拒絕來自 %s 的重複連線 (IP 已存在)\n", host)
-			peer.Close() // 關閉連線
+			// 使用底層 Conn 關閉，避免 undefined 錯誤
+			if peer.Conn != nil {
+				peer.Conn.Close()
+			}
 			return
 		}
 
