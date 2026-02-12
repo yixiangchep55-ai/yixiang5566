@@ -471,6 +471,12 @@ func (n *Node) Start() {
 	// 5️⃣ 确定 best index（previous tip）
 	// -----------------------------------------
 	bestIndex := indexes[bestHash]
+	if bestIndex == nil {
+		fmt.Printf("❌ 致命錯誤：資料庫索引不一致！找不到 Hash: %s\n", bestHash)
+		fmt.Println("🔄 正在嘗試自動修復... 請重新啟動程式。")
+		n.DB.Delete("meta", "best") // 刪除錯誤的指標
+		return                      // 結束 Start，防止後面的 466 行 Panic
+	}
 	n.Best = bestIndex
 	n.Blocks = indexes
 
