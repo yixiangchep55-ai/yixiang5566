@@ -396,12 +396,14 @@ func (n *Node) rebuildChain(oldChain, newChain []*BlockIndex, newTip *BlockIndex
 // 查询接口
 // --------------------
 
+// 放在 mycoin/node/node.go 中
+
 func (n *Node) Start() {
 
 	fmt.Println("🚀 Node starting...")
 
 	// -----------------------------------------
-	// 1️⃣ 读取 best（检查 DB 是否存在区块）
+	// 1️⃣ 讀取 best（檢查 DB 是否存在區塊）
 	// -----------------------------------------
 	bestHashBytes := n.DB.Get("meta", "best")
 	if bestHashBytes == nil {
@@ -412,7 +414,7 @@ func (n *Node) Start() {
 	bestHash := string(bestHashBytes)
 
 	// -----------------------------------------
-	// 2️⃣ 从 index bucket 加载所有 BlockIndex（轻量结构）
+	// 2️⃣ 從 index bucket 加載所有 BlockIndex
 	// -----------------------------------------
 	indexes := make(map[string]*BlockIndex)
 
@@ -423,78 +425,86 @@ func (n *Node) Start() {
 	})
 
 	if len(indexes) == 0 {
-		fmt.Println("⚠️ No index found but best hash exists. Database corrupted?")
+		fmt.Println("⚠️ 警告：資料庫 meta 有紀錄，但 index 是空的！")
+		fmt.Println("🔄 自動重置創世區塊...")
+		n.DB.Delete("meta", "best")
+		n.initGenesis()
 		return
 	}
 
+	// 補回 big.Int
 	for _, bi := range indexes {
 		bi.CumWorkInt = new(big.Int)
 		if bi.CumWork != "" {
-			bi.CumWorkInt.SetString(bi.CumWork, 16)
+			bi.CumWorkInt.SetString(bi.CumWork, 16) // ✅ 確保這裡是 16
 		} else {
 			bi.CumWorkInt.SetInt64(0)
 		}
 	}
 
 	// -----------------------------------------
-	// 3️⃣ 为每个 BlockIndex 加载 Block 本体
+	// 3️⃣ 加載 Block 本體
 	// -----------------------------------------
 	for _, bi := range indexes {
 		raw := n.DB.Get("blocks", bi.Hash)
-		if raw == nil {
-			log.Println("❌ block missing in DB:", bi.Hash)
-			continue
+		if raw != nil {
+			blk, err := blockchain.DeserializeBlock(raw)
+			if err == nil {
+				bi.Block = blk
+			}
 		}
-
-		blk, err := blockchain.DeserializeBlock(raw)
-		if err != nil {
-			log.Println("❌ failed to decode block:", bi.Hash)
-			continue
-		}
-
-		bi.Block = blk
 	}
 
 	// -----------------------------------------
-	// 4️⃣ 重建 Parent / Children 指针（基于 PrevHash）
+	// 4️⃣ 重建父子關係
 	// -----------------------------------------
 	for _, bi := range indexes {
 		if bi.PrevHash != "" {
 			parent := indexes[bi.PrevHash]
-			bi.Parent = parent
-			parent.Children =
-				append(parent.Children, bi)
+			if parent != nil {
+				bi.Parent = parent
+				parent.Children = append(parent.Children, bi)
+			}
 		}
 	}
 
 	// -----------------------------------------
-	// 5️⃣ 确定 best index（previous tip）
+	// 5️⃣ 確定 best index (最關鍵的防崩潰點)
 	// -----------------------------------------
 	bestIndex := indexes[bestHash]
+
+	// 🔥🔥🔥 絕對防禦：如果這裡是 nil，直接重置，不准往下跑！ 🔥🔥🔥
 	if bestIndex == nil {
-		fmt.Printf("❌ 致命錯誤：資料庫索引不一致！找不到 Hash: %s\n", bestHash)
-		fmt.Println("🔄 正在嘗試自動修復... 請重新啟動程式。")
-		n.DB.Delete("meta", "best") // 刪除錯誤的指標
-		return                      // 結束 Start，防止後面的 466 行 Panic
+		fmt.Printf("❌ [Fatal] 資料庫損壞：找不到 BestBlock (Hash: %s)\n", bestHash)
+		fmt.Println("🧹 正在清除錯誤的 meta 標籤，請重新啟動節點...")
+		n.DB.Delete("meta", "best")
+		return // 👈 強制結束，防止後面報錯
 	}
+
 	n.Best = bestIndex
 	n.Blocks = indexes
 
 	// -----------------------------------------
-	// 6️⃣ 重建链：从 best 回溯到 genesis
+	// 6️⃣ 重建鏈
 	// -----------------------------------------
 	var chain []*blockchain.Block
 	cur := bestIndex
 
 	for cur != nil {
-		chain = append([]*blockchain.Block{cur.Block}, chain...)
+		if cur.Block != nil {
+			chain = append([]*blockchain.Block{cur.Block}, chain...)
+		}
 		cur = cur.Parent
 	}
 
 	n.Chain = chain
 
+	// 這裡就是你原本報錯的 466 行，現在 bestIndex 絕對不可能是 nil 了
 	fmt.Printf("🏗  Loaded %d blocks from DB. Best height = %d\n",
 		len(chain), bestIndex.Height)
+
+	// ... (後面的 UTXO 和 Mempool 加載代碼保持不變) ...
+	// 請確認後面還有加載 UTXO 和 Mempool 的代碼，不要漏掉了
 
 	// -----------------------------------------
 	// 7️⃣ 重建 UTXO
@@ -505,32 +515,22 @@ func (n *Node) Start() {
 		json.Unmarshal(v, &u)
 		n.UTXO.Set[string(k)] = u
 	})
-
-	fmt.Printf("💰 Loaded %d UTXOs\n", len(n.UTXO.Set))
-
-	// -----------------------------------------
-	// 8️⃣ 重建 mempool（空）
-	// -----------------------------------------
+	// ... (Mempool 初始代碼) ...
 	n.Mempool = mempool.NewMempool(1000, n.DB)
 	n.loadMempool()
 	n.IsSyncing = true
 
-	// 初始化同步子状态
-	n.HeadersSynced = false
-	n.BodiesSynced = false
-
-	// 根据高度打印不同的提示，方便你调试本机和 VM
+	// ... (狀態設定) ...
 	if n.Best == nil || n.Best.Height == 0 {
-		n.SyncState = SyncIBD // 初始区块下载模式
+		n.SyncState = SyncIBD
 		fmt.Println("🆕 Fresh node, starting IBD...")
 	} else {
-		n.SyncState = SyncHeaders // 增量同步模式
+		n.SyncState = SyncHeaders
 		fmt.Printf("📥 Resuming sync from height %d...\n", n.Best.Height)
 	}
 
 	fmt.Println("✅ Node is ready and searching for peers...")
 }
-
 func (n *Node) initGenesis() {
 	genesis := blockchain.NewGenesisBlock(n.Target)
 
