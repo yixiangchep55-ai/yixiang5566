@@ -430,7 +430,7 @@ func (n *Node) Start() {
 	for _, bi := range indexes {
 		bi.CumWorkInt = new(big.Int)
 		if bi.CumWork != "" {
-			bi.CumWorkInt.SetString(bi.CumWork, 10)
+			bi.CumWorkInt.SetString(bi.CumWork, 16)
 		} else {
 			bi.CumWorkInt.SetInt64(0)
 		}
@@ -528,18 +528,26 @@ func (n *Node) Start() {
 func (n *Node) initGenesis() {
 	genesis := blockchain.NewGenesisBlock(n.Target)
 
-	// 计算工作量
-	work := computeWork(genesis.Target)
+	// =========================================================
+	// 🔥 符合現實的寫法：以 Bits 為準 (Bits as Truth) 🔥
+	// =========================================================
 
-	// --- 转 hex ---
+	// 即使我們是創世者，我們也要模擬「從網路上收到這個區塊」的過程。
+	// 我們將 Bits 還原為 big.Int，這會丟失末位的精度，但这才是全網共識的 Target。
+	consensusTarget := utils.CompactToBig(genesis.Bits)
+
+	// 使用這個「共識 Target」來計算工作量
+	work := computeWork(consensusTarget)
+
+	// =========================================================
+
 	hashHex := hex.EncodeToString(genesis.Hash)
-
 	// 🔴 核心修改：确保 bi 结构体包含了 Block 本体
 	bi := &BlockIndex{
 		Block:      genesis, // 挂载本体
 		Hash:       hashHex,
 		Height:     0,
-		CumWork:    work.String(),
+		CumWork:    work.Text(16),
 		CumWorkInt: work,
 		Parent:     nil,
 		Children:   []*BlockIndex{}, // 养成初始化切片的好习惯
