@@ -1,31 +1,12 @@
 package wallet
 
 import (
-	"encoding/hex"
-
 	"mycoin/blockchain"
-
-	"crypto/sha256"
-
-	"github.com/btcsuite/btcd/btcec/v2/ecdsa"
 )
 
 func SignTransaction(tx *blockchain.Transaction, w *Wallet) error {
-	for i := range tx.Inputs {
-
-		// 1️⃣ 计算该输入的签名哈希
-		data := tx.IDForSig(i)
-		hash := sha256.Sum256(data)
-
-		// 2️⃣ 用 secp256k1 私钥签名（btcec/v2）
-		sig := ecdsa.Sign(w.PrivateKey, hash[:])
-
-		// 3️⃣ 写入 DER 签名（hex）
-		tx.Inputs[i].Sig = hex.EncodeToString(sig.Serialize())
-
-		// 4️⃣ 写入压缩公钥（hex）
-		tx.Inputs[i].PubKey = hex.EncodeToString(w.PublicKey)
-	}
-
-	return nil
+	// 🚀 直接呼叫交易本身內建的 Sign 方法！
+	// 我們剛剛已經在 transaction.go 裡面把公鑰寫入、Hash 防護都做好了，
+	// 這裡直接交給它處理，保證簽名與驗證 100% 同步！
+	return tx.Sign(w.PrivateKey)
 }

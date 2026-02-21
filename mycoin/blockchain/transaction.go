@@ -53,12 +53,19 @@ func HashTxBytes(b []byte) string {
 }
 
 // 签名交易
+// 請在 transaction.go 裡面修改！
 func (tx *Transaction) Sign(priv *btcec.PrivateKey) error {
 	if tx.IsCoinbase {
 		return nil
 	}
 
+	// 🚀 1. 關鍵新增：直接從傳進來的私鑰，推導出公鑰的 Hex 字串
+	pubKeyHex := hex.EncodeToString(priv.PubKey().SerializeCompressed())
+
 	for i := range tx.Inputs {
+		// 🚀 2. 關鍵新增：在算 Hash 之前，先把真正的公鑰塞進 Input 裡！
+		tx.Inputs[i].PubKey = pubKeyHex
+
 		data := tx.IDForSig(i) // 待签名摘要
 		hash := sha256.Sum256(data)
 
