@@ -1,14 +1,10 @@
 package node
 
 import (
-	"crypto/sha256"
 	"encoding/hex"
 	"errors"
 	"fmt"
 	"mycoin/blockchain"
-
-	"github.com/btcsuite/btcd/btcec/v2"
-	"github.com/btcsuite/btcd/btcec/v2/ecdsa"
 )
 
 // VerifyBlockWithUTXO 驗證整個區塊的合法性
@@ -55,18 +51,21 @@ func VerifyBlockWithUTXO(
 	return nil
 }
 
-// VerifyTx 獨立為通用函數，傳入動態的 utxoSet
 func VerifyTx(tx blockchain.Transaction, utxoSet *blockchain.UTXOSet) error {
-
 	// 1️⃣ coinbase 永远合法
 	if tx.IsCoinbase {
 		return nil
 	}
 
-	totalIn := 0
-	for i, in := range tx.Inputs {
+	// 🔥 2️⃣ 直接呼叫 Transaction 內建的驗證，確保密碼學簽名絕對合法！
+	if !tx.Verify() {
+		return errors.New("signature verification failed (tx.Verify returned false)")
+	}
 
-		// 2️⃣ 检查 UTXO 是否存在 (🔥 改從傳入的 utxoSet 找)
+	totalIn := 0
+	for _, in := range tx.Inputs {
+
+		// 3️⃣ 检查 UTXO 是否存在
 		key := fmt.Sprintf("%s_%d", in.TxID, in.Index)
 		utxo, ok := utxoSet.Set[key]
 		if !ok {
@@ -74,7 +73,7 @@ func VerifyTx(tx blockchain.Transaction, utxoSet *blockchain.UTXOSet) error {
 		}
 		totalIn += utxo.Amount
 
-		// 3️⃣ 验证公钥是否匹配该 UTXO 的 owner
+		// 4️⃣ 验证公钥是否匹配该 UTXO 的 owner (防小偷拿自己的私鑰花你的錢)
 		pubBytes, err := hex.DecodeString(in.PubKey)
 		if err != nil {
 			return errors.New("invalid pubkey hex")
@@ -84,39 +83,16 @@ func VerifyTx(tx blockchain.Transaction, utxoSet *blockchain.UTXOSet) error {
 		if addr != utxo.To {
 			return fmt.Errorf("pubkey does not match utxo owner")
 		}
-
-		// 4️⃣ 验证签名
-		sigBytes, err := hex.DecodeString(in.Sig)
-		if err != nil {
-			return errors.New("invalid signature hex")
-		}
-
-		sig, err := ecdsa.ParseDERSignature(sigBytes)
-		if err != nil {
-			return errors.New("invalid DER signature")
-		}
-
-		pubKey, err := btcec.ParsePubKey(pubBytes)
-		if err != nil {
-			return errors.New("invalid public key")
-		}
-
-		// 5️⃣ 重算签名哈希
-		hash := sha256.Sum256(tx.IDForSig(i))
-
-		if !sig.Verify(hash[:], pubKey) {
-			return fmt.Errorf("signature verification failed for input %d", i)
-		}
 	}
 
-	// 6️⃣ 检查出账金额 (防憑空印鈔)
+	// 5️⃣ 检查出账金额 (防憑空印鈔)
 	totalOut := 0
 	for _, out := range tx.Outputs {
 		totalOut += out.Amount
 	}
 
 	if totalIn < totalOut {
-		return errors.New("inputs < outputs (企圖憑空印鈔)")
+		return errors.New("inputs < outputs")
 	}
 
 	return nil

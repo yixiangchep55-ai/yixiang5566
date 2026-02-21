@@ -139,9 +139,9 @@ func (tx *Transaction) IDForSig(idx int) []byte {
 	return hash[:]
 }
 
-// cloneWithoutSign 返回一个交易副本，清空所有签名字段
 func (tx *Transaction) cloneWithoutSign() *Transaction {
 	tmp := *tx
+	tmp.ID = "" // 🚀 關鍵防護：確保 ID 的變化絕對不會影響簽名 Hash！
 	tmp.Inputs = make([]TxInput, len(tx.Inputs))
 	for i, in := range tx.Inputs {
 		tmp.Inputs[i] = TxInput{
