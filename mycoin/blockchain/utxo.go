@@ -12,7 +12,6 @@ type UTXO struct {
 	Index  int
 	Amount int
 	To     string // 收款公钥 hex
-	Outs   []TxOutput
 }
 
 // UTXOSet 管理整个节点的 UTXO 集合
@@ -91,6 +90,9 @@ func (u *UTXOSet) Clone() *UTXOSet {
 
 // 消耗UTXO（交易输入），返回错误
 func (u *UTXOSet) Spend(tx Transaction) error {
+	if tx.IsCoinbase {
+		return nil
+	}
 	for _, in := range tx.Inputs {
 		key := fmt.Sprintf("%s_%d", in.TxID, in.Index)
 		utxo, ok := u.Set[key]
@@ -153,4 +155,26 @@ func (u *UTXOSet) Get(txid string, index int) (*TxOutput, bool) {
 		Amount: utxo.Amount,
 		To:     utxo.To,
 	}, true
+}
+
+func (u *UTXOSet) FindSpendableOutputs(pubKey string, amount int) (int, map[string][]int) {
+	unspentOutputs := make(map[string][]int)
+	accumulated := 0
+
+	// 利用你寫好的 AddrIndex 快速找出這個人的所有 UTXO
+	keys := u.AddrIndex[pubKey]
+
+	for _, k := range keys {
+		if utxo, ok := u.Set[k]; ok {
+			accumulated += utxo.Amount
+			unspentOutputs[utxo.TxID] = append(unspentOutputs[utxo.TxID], utxo.Index)
+
+			// 錢湊夠了就停止，不需要把所有的 UTXO 都找出來
+			if accumulated >= amount {
+				break
+			}
+		}
+	}
+
+	return accumulated, unspentOutputs
 }

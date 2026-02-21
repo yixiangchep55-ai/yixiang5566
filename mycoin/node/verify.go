@@ -11,6 +11,7 @@ import (
 	"github.com/btcsuite/btcd/btcec/v2/ecdsa"
 )
 
+// VerifyBlockWithUTXO 驗證整個區塊的合法性
 func VerifyBlockWithUTXO(
 	block *blockchain.Block,
 	parent *blockchain.Block,
@@ -22,7 +23,7 @@ func VerifyBlockWithUTXO(
 		return err
 	}
 
-	// 2️⃣ 临时 UTXO
+	// 2️⃣ 临时 UTXO (隔離沙盒)
 	tmp := utxo.Clone()
 
 	// 3️⃣ coinbase 必须第一个
@@ -37,16 +38,25 @@ func VerifyBlockWithUTXO(
 			continue
 		}
 
+		// 🔥 關鍵新增：在 Spend 之前，利用 tmp 進行嚴格的簽名與金額檢查
+		if err := VerifyTx(tx, tmp); err != nil {
+			return fmt.Errorf("tx %s invalid: %v", tx.ID, err)
+		}
+
+		// 如果上面檢查通過，這裡執行花費 (同時防禦同一區塊內的雙花)
 		if err := tmp.Spend(tx); err != nil {
 			return fmt.Errorf("double spend or missing utxo: %v", err)
 		}
+
+		// 產生新的 UTXO 供後續交易使用
 		tmp.Add(tx)
 	}
 
 	return nil
 }
 
-func (n *Node) VerifyTx(tx blockchain.Transaction) error {
+// VerifyTx 獨立為通用函數，傳入動態的 utxoSet
+func VerifyTx(tx blockchain.Transaction, utxoSet *blockchain.UTXOSet) error {
 
 	// 1️⃣ coinbase 永远合法
 	if tx.IsCoinbase {
@@ -56,9 +66,9 @@ func (n *Node) VerifyTx(tx blockchain.Transaction) error {
 	totalIn := 0
 	for i, in := range tx.Inputs {
 
-		// 2️⃣ 检查 UTXO 是否存在
+		// 2️⃣ 检查 UTXO 是否存在 (🔥 改從傳入的 utxoSet 找)
 		key := fmt.Sprintf("%s_%d", in.TxID, in.Index)
-		utxo, ok := n.UTXO.Set[key]
+		utxo, ok := utxoSet.Set[key]
 		if !ok {
 			return fmt.Errorf("missing input utxo: %s", key)
 		}
@@ -99,14 +109,14 @@ func (n *Node) VerifyTx(tx blockchain.Transaction) error {
 		}
 	}
 
-	// 6️⃣ 检查出账金额
+	// 6️⃣ 检查出账金额 (防憑空印鈔)
 	totalOut := 0
 	for _, out := range tx.Outputs {
 		totalOut += out.Amount
 	}
 
 	if totalIn < totalOut {
-		return errors.New("inputs < outputs")
+		return errors.New("inputs < outputs (企圖憑空印鈔)")
 	}
 
 	return nil

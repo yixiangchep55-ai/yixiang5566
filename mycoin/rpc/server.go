@@ -228,22 +228,14 @@ func (s *RPCServer) handleRPC(w http.ResponseWriter, r *http.Request) {
 		// 3️⃣ DTO → Transaction（你的转换函数）
 		txObj := network.DTOToTx(dto)
 
-		// 4️⃣ 验证交易
-		if err := s.Node.VerifyTx(txObj); err != nil {
-			s.writeError(w, req.ID, "tx reject: "+err.Error())
+		// 4️⃣ 驗證並加入 mempool (呼叫門口保全)
+		if ok := s.Node.AddTx(txObj); !ok {
+			s.writeError(w, req.ID, "tx rejected: validation or mempool error")
 			return
 		}
 
-		// 5️⃣ 加入 mempool（这里必须能处理序列化）
-		ok = s.Node.Mempool.AddTxRBF(txObj.ID, txObj.Serialize(), s.Node.UTXO)
-		if !ok {
-			s.writeError(w, req.ID, "tx rejected: mempool add failed")
-			return
-		}
-
-		// 6️⃣ 广播
+		// 5️⃣ 广播
 		s.Handler.BroadcastLocalTx(txObj)
-
 		s.writeResult(w, req.ID, txObj.ID)
 
 	case "gettransaction":

@@ -156,31 +156,19 @@ func (s *RPCServer) handleRPC(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 
-		// 3️⃣ 节点验证（必须是 value）
-		if err := s.Node.VerifyTx(*tx); err != nil {
-			s.writeError(w, req.ID, "tx rejected: "+err.Error())
+		// 3️⃣ 節點驗證並加入 mempool (呼叫我們寫好的門口保全！)
+		// 注意這裡傳入的是 *tx (解指標取值)
+		if ok := s.Node.AddTx(*tx); !ok {
+			s.writeError(w, req.ID, "tx rejected: validation or mempool error")
 			return
 		}
 
-		// 4️⃣ 加入 mempool（必须是 AddTx）
-		txBytes := tx.Serialize()
-
-		ok = s.Node.Mempool.AddTxRBF(
-			tx.ID,
-			txBytes,
-			s.Node.UTXO,
-		)
-
-		if !ok {
-			s.writeError(w, req.ID, "mempool rejected tx (RBF / conflict / low fee)")
-			return
-		}
-		// 5️⃣ 广播交易（Node 不负责广播，Handler 才负责）
+		// 4️⃣ 广播交易（Node 不负责广播，Handler 才负责）
 		if s.Handler != nil {
 			s.Handler.BroadcastLocalTx(*tx)
 		}
 
-		// 6️⃣ 返回 txid
+		// 5️⃣ 返回 txid
 		s.writeResult(w, req.ID, tx.ID)
 
 	default:

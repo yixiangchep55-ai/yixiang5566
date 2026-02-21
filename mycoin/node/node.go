@@ -182,60 +182,39 @@ func (n *Node) Mine() {
 // 添加交易到 Mempool
 // --------------------
 func (n *Node) AddTx(tx blockchain.Transaction) bool {
-
-	// ⭐ 0️⃣ 检查「同一交易内部」是否重复花费同一个 UTXO
-	seen := map[string]bool{}
-	for _, in := range tx.Inputs {
-		key := utxoKey(in.TxID, in.Index)
-		if seen[key] {
-			fmt.Println("❌ 交易内部重复输入（double spend in same tx）")
-			return false
-		}
-		seen[key] = true
-	}
-
-	// 1️⃣ 校验输入是否存在（confirmed UTXO 或 mempool 父交易）
-	for i, in := range tx.Inputs {
-		if n.UTXO.Exists(in.TxID, in.Index, in.PubKey) {
-			continue
-		}
-
-		if n.Mempool.Has(in.TxID) {
-			continue
-		}
-
-		fmt.Printf("❌ 输入 %d 不存在（非 confirmed / 非 mempool）\n", i)
+	// 1️⃣ 基礎防禦：呼叫我們剛寫好的「驗鈔機」！
+	// 這裡會檢查簽名、餘額是否足夠、有沒有憑空捏造 UTXO
+	if err := VerifyTx(tx, n.UTXO); err != nil {
+		fmt.Printf("❌ 交易驗證失敗被拒絕 (%s): %v\n", tx.ID, err)
 		return false
 	}
 
-	// 2️⃣ 校验签名
-	if !tx.Verify() {
-		fmt.Println("❌ 交易签名不合法")
+	// 2️⃣ 檢查是否已經在 Mempool 裡了 (避免重複廣播)
+	if n.Mempool.Has(tx.ID) {
+		// fmt.Println("ℹ️ 交易已存在于 Mempool")
 		return false
 	}
 
-	// 3️⃣ 计算 txid
-	txid := tx.Hash()
-
-	// 4️⃣ 去重（同 txid）
-	if n.Mempool.Has(txid) {
-		fmt.Println("ℹ️ 交易已存在于 Mempool")
+	// 3️⃣ 檢查 Mempool 內部的雙花衝突
+	// 雖然 VerifyTx 檢查了全網 UTXO，但可能 Mempool 裡已經有另一筆交易想花同一筆錢
+	if n.Mempool.HasDoubleSpend(&tx) {
+		fmt.Printf("❌ 交易被拒絕：與 Mempool 內的交易發生雙花衝突 (%s)\n", tx.ID)
 		return false
 	}
 
-	// 5️⃣ 加入 mempool（双花 / RBF / eviction 都在这里）
+	// 4️⃣ 交給 Mempool 核心去處理 (包含 RBF 替換、Eviction 踢人)
 	ok := n.Mempool.AddTxRBF(
-		txid,
+		tx.ID,
 		tx.Serialize(),
 		n.UTXO,
 	)
 
 	if !ok {
-		fmt.Println("❌ 交易被拒绝（双花 / fee 过低 / RBF 失败）")
+		fmt.Println("❌ 交易被 Mempool 拒絕 (可能手續費太低或 RBF 失敗)")
 		return false
 	}
 
-	fmt.Println("✅ 交易进入 Mempool")
+	fmt.Printf("📥 ✅ 交易 %s 成功進入 Mempool，等待打包\n", tx.ID)
 	return true
 }
 
