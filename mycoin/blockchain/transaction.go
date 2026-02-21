@@ -5,6 +5,7 @@ import (
 	"encoding/binary"
 	"encoding/hex"
 	"encoding/json"
+	"fmt"
 
 	"github.com/btcsuite/btcd/btcec/v2"
 	ecdsa "github.com/btcsuite/btcd/btcec/v2/ecdsa"
@@ -135,20 +136,23 @@ func NewCoinbase(to string, reward int) *Transaction {
 func (tx *Transaction) IDForSig(idx int) []byte {
 	tmp := tx.cloneWithoutSign()
 	data, _ := json.Marshal(tmp)
+	fmt.Printf("\n🕵️ [Debug] IDForSig 準備 Hash 的 JSON: %s\n", string(data))
 	hash := sha256.Sum256(data)
 	return hash[:]
 }
 
+// cloneWithoutSign 返回一个交易副本，清空所有可能引起 Hash 變化的欄位
 func (tx *Transaction) cloneWithoutSign() *Transaction {
 	tmp := *tx
-	tmp.ID = "" // 🚀 關鍵防護：確保 ID 的變化絕對不會影響簽名 Hash！
+	tmp.ID = "" // 🚀 防護 1：強制清空 ID
+
 	tmp.Inputs = make([]TxInput, len(tx.Inputs))
 	for i, in := range tx.Inputs {
 		tmp.Inputs[i] = TxInput{
 			TxID:   in.TxID,
 			Index:  in.Index,
-			Sig:    "", // 清空签名
-			PubKey: in.PubKey,
+			Sig:    "", // 🚀 防護 2：清空簽名
+			PubKey: "", // 🚀 防護 3：強制清空公鑰 (這招最關鍵，徹底杜絕欄位賦值時間差)
 		}
 	}
 	return &tmp
