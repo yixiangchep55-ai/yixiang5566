@@ -48,6 +48,7 @@ func (u *UTXOSet) Clear() error {
 }
 
 // 添加UTXO（交易输出）
+// 添加UTXO（交易输出）
 func (u *UTXOSet) Add(tx Transaction) {
 	for i, out := range tx.Outputs {
 
@@ -61,11 +62,22 @@ func (u *UTXOSet) Add(tx Transaction) {
 			To:     out.To,
 		}
 
-		// 1️⃣ 写入内存 Set
+		// 1️⃣ 写入内存 Set (Map 会自动覆盖旧值，所以很安全)
 		u.Set[key] = utxo
 
-		// 2️⃣ 写入地址索引（内存）
-		u.AddrIndex[out.To] = append(u.AddrIndex[out.To], key)
+		// 2️⃣ 🚀 写入地址索引前，先检查是否已经存在（防止影分身！）
+		exists := false
+		for _, existingKey := range u.AddrIndex[out.To] {
+			if existingKey == key {
+				exists = true
+				break
+			}
+		}
+
+		// 只有當這個 key 不存在時，我們才把它加進陣列裡
+		if !exists {
+			u.AddrIndex[out.To] = append(u.AddrIndex[out.To], key)
+		}
 
 		// 3️⃣ ⭐ 持久化到数据库（可选，但推荐）
 		if u.DB != nil {
@@ -77,7 +89,6 @@ func (u *UTXOSet) Add(tx Transaction) {
 		}
 	}
 }
-
 func (u *UTXOSet) Clone() *UTXOSet {
 	nu := NewUTXOSet(u.DB)
 	for k, v := range u.Set {
