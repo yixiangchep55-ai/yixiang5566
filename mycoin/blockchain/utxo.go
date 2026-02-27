@@ -1,6 +1,7 @@
 package blockchain
 
 import (
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"mycoin/database"
@@ -99,7 +100,19 @@ func (u *UTXOSet) Spend(tx Transaction) error {
 		if !ok {
 			return fmt.Errorf("UTXO not found: %s", key)
 		}
-		if utxo.To != in.PubKey {
+
+		// 🚀 關鍵修復 1：將 Hex 公鑰還原成 Base58 錢包地址
+		pubBytes, err := hex.DecodeString(in.PubKey)
+		if err != nil {
+			return fmt.Errorf("invalid pubkey hex: %v", err)
+		}
+
+		// ⚠️ 注意：如果你的 PubKeyToAddress 是在 blockchain 包裡，這裡就是 blockchain.PubKeyToAddress
+		// 如果這個 Spend 函數本身就在 blockchain 包裡，直接呼叫 PubKeyToAddress 即可
+		addr := PubKeyToAddress(pubBytes)
+
+		// 🚀 關鍵修復 2：用算出來的「地址 (addr)」來跟 UTXO 上的「地址 (utxo.To)」比對
+		if utxo.To != addr {
 			return fmt.Errorf("UTXO owner mismatch: %s", key)
 		}
 
@@ -110,11 +123,11 @@ func (u *UTXOSet) Spend(tx Transaction) error {
 			u.DB.Delete("utxo", key)
 		}
 
-		// 同步地址索引
-		keys := u.AddrIndex[in.PubKey]
+		// 🚀 關鍵修復 3：同步地址索引時，也必須使用「地址 (addr)」來尋找，而不是公鑰！
+		keys := u.AddrIndex[addr]
 		for i, k := range keys {
 			if k == key {
-				u.AddrIndex[in.PubKey] = append(keys[:i], keys[i+1:]...)
+				u.AddrIndex[addr] = append(keys[:i], keys[i+1:]...)
 				break
 			}
 		}
