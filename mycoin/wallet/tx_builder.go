@@ -12,7 +12,13 @@ func SelectUTXO(utxo *blockchain.UTXOSet, addr string, amount int) ([]blockchain
 
 	keys := utxo.AddrIndex[addr]
 	for _, key := range keys {
-		u := utxo.Set[key]
+		// 🚀 關鍵修復：必須使用 ok 來確認這筆錢是否「真的還在」！
+		u, ok := utxo.Set[key]
+		if !ok {
+			// 如果不在 Set 裡（代表是舊的幽靈索引，已經被花掉了），直接跳過！
+			continue
+		}
+
 		selected = append(selected, u)
 		total += u.Amount
 		if total >= amount {
