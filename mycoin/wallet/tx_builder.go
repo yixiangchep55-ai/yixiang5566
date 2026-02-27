@@ -11,16 +11,27 @@ func SelectUTXO(utxo *blockchain.UTXOSet, addr string, amount int) ([]blockchain
 	total := 0
 
 	keys := utxo.AddrIndex[addr]
+
+	// 🚀 新增：用一個 map 來記錄「已經拿進購物車的鈔票」，防止影分身！
+	used := make(map[string]bool)
+
 	for _, key := range keys {
-		// 🚀 關鍵修復：必須使用 ok 來確認這筆錢是否「真的還在」！
-		u, ok := utxo.Set[key]
-		if !ok {
-			// 如果不在 Set 裡（代表是舊的幽靈索引，已經被花掉了），直接跳過！
+		// 🚀 關鍵防護 1：如果這張鈔票剛剛已經拿過了，絕對不拿第二次！
+		if used[key] {
 			continue
 		}
 
+		// 🚀 關鍵防護 2：幽靈空殼防護 (你上一版加的)
+		u, ok := utxo.Set[key]
+		if !ok {
+			continue
+		}
+
+		// 拿錢，並標記為已使用
 		selected = append(selected, u)
 		total += u.Amount
+		used[key] = true // 標記：這張鈔票我拿走了！
+
 		if total >= amount {
 			break
 		}
@@ -32,7 +43,6 @@ func SelectUTXO(utxo *blockchain.UTXOSet, addr string, amount int) ([]blockchain
 
 	return selected, total
 }
-
 func BuildTransaction(
 	fromAddr string,
 	toAddr string,
