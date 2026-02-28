@@ -8,8 +8,13 @@ import (
 )
 
 func NewGenesisBlock(target *big.Int) *Block {
-	genesisTx := NewCoinbase("GENESIS", 1000000)
-
+	// 🚀 關鍵修復：加上第三個參數！這是一段固定的創世名言
+	// （你可以改成任何你喜歡的句子，但主機和 VM 執行的程式碼裡這句必須完全一樣！）
+	genesisTx := NewCoinbase(
+		"GENESIS",
+		1000000,
+		"The Times 03/Jan/2009 Chancellor on brink of second bailout for banks", // 👈 就是這個固定字串！
+	)
 	// binary prev hash (all zero)
 	prev := make([]byte, 32)
 

@@ -122,27 +122,32 @@ func (tx *Transaction) Verify() bool {
 	return true
 }
 
-func NewCoinbase(to string, reward int) *Transaction {
-	// 🚀 關鍵新增：製造一個帶有「精準時間戳」的虛擬 Input
+// 增加一個 genesisData 參數
+func NewCoinbase(to string, reward int, genesisData string) *Transaction {
+	var sig string
+
+	// 🚀 關鍵判斷：如果有傳入創世字串，就用固定的！否則就用時間戳！
+	if genesisData != "" {
+		sig = genesisData
+	} else {
+		sig = fmt.Sprintf("%d", time.Now().UnixNano())
+	}
+
 	dummyInput := TxInput{
 		TxID:   "",
 		Index:  -1,
-		Sig:    fmt.Sprintf("%d", time.Now().UnixNano()), // 塞入奈秒級時間，保證全球唯一！
+		Sig:    sig, // 使用剛剛判斷好的 sig
 		PubKey: "Coinbase",
 	}
 
 	tx := &Transaction{
-		Inputs: []TxInput{dummyInput}, // 🚀 把虛擬 Input 裝進去 (原本是 nil)
+		Inputs: []TxInput{dummyInput},
 		Outputs: []TxOutput{
-			{
-				Amount: reward,
-				To:     to,
-			},
+			{Amount: reward, To: to},
 		},
 		IsCoinbase: true,
 	}
 
-	// 使用稳定序列化（不会乱序）
 	tx.ID = tx.DeterministicID()
 	return tx
 }

@@ -86,15 +86,21 @@ func (m *Miner) Mine(includeMempool bool) *blockchain.Block {
 	cb := blockchain.NewCoinbase(
 		m.Address,
 		m.Node.GetReward()+totalFee,
+		"", // 👈 就是這個空字串！
 	)
-	txs = append([]blockchain.Transaction{*cb}, txs...)
 	// ------------------------------------
+
+	// ==========================================
+	// 🚀 關鍵修復：把 cb 塞進交易陣列 txs 的最前面！
+	// 這樣 cb 就被「使用」了，編譯器就不會報錯了！
+	// ==========================================
+	txs = append([]blockchain.Transaction{*cb}, txs...)
 
 	// 2. 構造區塊模板
 	block := blockchain.NewBlock(
 		prev.Height+1,
 		prev.Hash,
-		txs,
+		txs, // 👈 現在這個 txs 裡面，已經包含了熱騰騰的 cb 礦工獎勵了！
 		m.Node.GetCurrentTarget(),
 		m.Address,
 		m.Node.GetReward(),
