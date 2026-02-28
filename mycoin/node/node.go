@@ -323,6 +323,9 @@ func (n *Node) rebuildChain(oldChain, newChain []*BlockIndex, newTip *BlockIndex
 	// -----------------------------
 	utxo := blockchain.NewUTXOSet(n.DB)
 	for _, blk := range fullChain {
+		if blk == nil { // 🚀 防護罩 1：如果區塊不在記憶體中，安全跳過！
+			continue
+		}
 		for _, tx := range blk.Transactions {
 			if !tx.IsCoinbase {
 				utxo.Spend(tx)
@@ -337,6 +340,9 @@ func (n *Node) rebuildChain(oldChain, newChain []*BlockIndex, newTip *BlockIndex
 	// -----------------------------
 	confirmed := make(map[string]bool)
 	for _, blk := range fullChain {
+		if blk == nil { // 🚀 防護罩 2：防止讀取空區塊的交易
+			continue
+		}
 		for _, tx := range blk.Transactions {
 			confirmed[tx.ID] = true
 		}
@@ -356,10 +362,14 @@ func (n *Node) rebuildChain(oldChain, newChain []*BlockIndex, newTip *BlockIndex
 	// 4️⃣ txindex 重建
 	// -----------------------------
 	for _, old := range oldChain {
-		n.removeTxIndex(old.Block)
+		if old != nil && old.Block != nil { // 🚀 防護罩 3：確保舊區塊存在才移除索引
+			n.removeTxIndex(old.Block)
+		}
 	}
 	for _, bi := range newChain {
-		n.indexTransactions(bi.Block, bi)
+		if bi != nil && bi.Block != nil { // 🚀 防護罩 4：確保新區塊存在才建立索引
+			n.indexTransactions(bi.Block, bi)
+		}
 	}
 
 	// -----------------------------
