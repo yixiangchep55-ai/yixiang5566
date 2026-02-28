@@ -349,17 +349,6 @@ func (h *Handler) handleBlock(peer *Peer, msg *Message) {
 		parent.Children = append(parent.Children, bi)
 	}
 
-	// 5. [修復問題2] 處理挖礦競爭 (Miner Interrupt)
-	// 如果這個新塊延伸了主鏈（變成了新的 Best），通知礦工立刻重置！
-	if h.Node.Best.Hash == hashHex {
-		// 非阻塞發送，通知礦工
-		select {
-		case h.Node.MinerResetChan <- true:
-			// fmt.Println("⚡ 收到新區塊，通知礦工重置...")
-		default:
-		}
-	}
-
 	// 6. 處理孤立塊
 	if orphans, ok := h.Node.Orphans[hashHex]; ok {
 		delete(h.Node.Orphans, hashHex)
