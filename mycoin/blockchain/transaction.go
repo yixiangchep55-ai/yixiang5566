@@ -232,8 +232,6 @@ func NewTransaction(inputs []TxInput, outputs []TxOutput) *Transaction {
 func (tx *Transaction) DeterministicID() string {
 	h := sha256.New()
 
-	// 按固定顺序写入字段
-
 	// 1. CoinBase flag
 	if tx.IsCoinbase {
 		h.Write([]byte{1})
@@ -241,10 +239,27 @@ func (tx *Transaction) DeterministicID() string {
 		h.Write([]byte{0})
 	}
 
-	// 2. outputs count
+	// ==========================================
+	// 🚀 關鍵修復：把 Inputs 也加進 Hash 計算裡！
+	// ==========================================
+	h.Write([]byte{byte(len(tx.Inputs))}) // 寫入 Inputs 數量
+	for _, in := range tx.Inputs {
+		h.Write([]byte(in.TxID)) // 寫入來源交易 ID
+
+		// 寫入 Index (8 bytes Big Endian)
+		idx := make([]byte, 8)
+		binary.BigEndian.PutUint64(idx, uint64(in.Index))
+		h.Write(idx)
+
+		h.Write([]byte(in.Sig))    // 🌟 我們剛剛加的時間戳就在這裡！現在它終於被算進去了！
+		h.Write([]byte(in.PubKey)) // 寫入公鑰
+	}
+	// ==========================================
+
+	// 3. outputs count
 	h.Write([]byte{byte(len(tx.Outputs))})
 
-	// 3. each output
+	// 4. each output
 	for _, out := range tx.Outputs {
 		// Amount (8 bytes Big Endian)
 		amt := make([]byte, 8)
