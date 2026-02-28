@@ -6,6 +6,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"time"
 
 	"github.com/btcsuite/btcd/btcec/v2"
 	ecdsa "github.com/btcsuite/btcd/btcec/v2/ecdsa"
@@ -121,10 +122,17 @@ func (tx *Transaction) Verify() bool {
 	return true
 }
 
-// 创建Coinbase交易
 func NewCoinbase(to string, reward int) *Transaction {
+	// 🚀 關鍵新增：製造一個帶有「精準時間戳」的虛擬 Input
+	dummyInput := TxInput{
+		TxID:   "",
+		Index:  -1,
+		Sig:    fmt.Sprintf("%d", time.Now().UnixNano()), // 塞入奈秒級時間，保證全球唯一！
+		PubKey: "Coinbase",
+	}
+
 	tx := &Transaction{
-		Inputs: nil,
+		Inputs: []TxInput{dummyInput}, // 🚀 把虛擬 Input 裝進去 (原本是 nil)
 		Outputs: []TxOutput{
 			{
 				Amount: reward,
