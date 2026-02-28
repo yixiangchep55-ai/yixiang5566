@@ -302,6 +302,12 @@ func (n *Node) AddBlock(block *blockchain.Block) bool {
 		return false
 	}
 
+	// 🚀 關鍵修復：Node 的核心狀態已經更新完畢，現在解開 Node 的鎖！
+	n.mu.Unlock()
+
+	// 🔓 現在 Node 已經解鎖了，我們可以安全地去呼叫 Mempool 的清理邏輯，絕對不會發生 ABBA 死鎖！
+	n.removeConfirmedTxs(block)
+
 	return true
 }
 

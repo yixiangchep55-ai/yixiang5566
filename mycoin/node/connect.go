@@ -133,9 +133,6 @@ func (n *Node) connectBlock(block *blockchain.Block, parent *BlockIndex) bool {
 		// 2. 更新 UTXO (增量更新)
 		n.updateUTXO(block)
 
-		// 3. 清理 Mempool
-		n.removeConfirmedTxs(block)
-
 		log.Printf("⛏️ Main chain extended to height: %d (Hash: %s)\n", bi.Height, hashHex)
 		chainSwitched = true
 
