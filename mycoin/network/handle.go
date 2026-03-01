@@ -517,28 +517,29 @@ func (h *Handler) handleTx(peer *Peer, msg *Message) {
 	}
 
 	txBytes := payload.Tx
-	txid := blockchain.HashTxBytes(txBytes)
 
-	if h.Node.Mempool.Has(txid) {
+	// 1️⃣ 先把 []byte 反序列化成真正的 Transaction 結構
+	tx, err := blockchain.DeserializeTransaction(txBytes)
+	if err != nil {
+		log.Println("❌ [Network] 無法解析交易資料:", err)
 		return
 	}
 
-	ok := h.Node.Mempool.AddTxRBF(
-		txid,
-		txBytes,
-		h.Node.UTXO,
-	)
-
-	if !ok {
-		log.Println("❌ tx rejected:", txid)
+	// ==========================================
+	// 🚀 2️⃣ 關鍵修改：統一交給 Node 處理！(走正門)
+	// AddTx 裡面已經有 n.mu.Lock() 保護，也有 VerifyTx 驗證，
+	// 它會安全地幫你呼叫 Mempool.AddTxRBF
+	// ==========================================
+	if ok := h.Node.AddTx(*tx); !ok {
+		log.Println("❌ tx rejected by node:", tx.ID)
 		return
 	}
 
-	log.Println("📥 tx added:", txid)
+	log.Println("📥 tx added from network:", tx.ID)
 
-	h.broadcastTxInv(txid)
+	// 3️⃣ 廣播給其他節點
+	h.broadcastTxInv(tx.ID)
 }
-
 func (h *Handler) broadcastTxInv(txid string) {
 	if h.Node.SyncState != node.SyncSynced {
 		return
