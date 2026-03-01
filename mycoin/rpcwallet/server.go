@@ -138,6 +138,8 @@ func (s *RPCServer) handleRPC(w http.ResponseWriter, r *http.Request) {
 		}
 		amount := int(amountFloat)
 
+		s.Node.Lock()
+
 		// 1️⃣ 构造未签名交易
 		tx, err := wallet.BuildTransaction(
 			s.Wallet.Address, // from
@@ -145,6 +147,9 @@ func (s *RPCServer) handleRPC(w http.ResponseWriter, r *http.Request) {
 			amount,
 			s.Node.UTXO,
 		)
+
+		s.Node.Unlock() // 🔓 呼叫公開的 Unlock()
+
 		if err != nil {
 			s.writeError(w, req.ID, err.Error())
 			return

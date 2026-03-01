@@ -314,79 +314,74 @@ func (n *Node) AddBlock(block *blockchain.Block) bool {
 }
 
 // --------------------
-// 重建主链 + UTXO
+// 重建主链 (完美退回交易版)
 // --------------------
 func (n *Node) rebuildChain(oldChain, newChain []*BlockIndex, newTip *BlockIndex) {
-
-	// 1️⃣ 构建完整主链
-	fullChain := []*blockchain.Block{}
+	// 1️⃣ 構建完整主鏈陣列
+	var fullChain []*blockchain.Block
 	cur := newTip
 	for cur != nil {
-		fullChain = append([]*blockchain.Block{cur.Block}, fullChain...)
+		if cur.Block != nil {
+			fullChain = append([]*blockchain.Block{cur.Block}, fullChain...)
+		}
 		cur = cur.Parent
 	}
 
-	// -----------------------------
-	// 2️⃣ 先重建 UTXO（必须先做）
-	// -----------------------------
-	utxo := blockchain.NewUTXOSet(n.DB)
-	for _, blk := range fullChain {
-		if blk == nil { // 🚀 防護罩 1：如果區塊不在記憶體中，安全跳過！
-			continue
-		}
-		for _, tx := range blk.Transactions {
-			if !tx.IsCoinbase {
-				utxo.Spend(tx)
+	// 更新 Node 核心指標
+	n.Chain = fullChain
+	n.Best = newTip
+
+	// 2️⃣ 收集新鏈中【已經確認】的交易 ID
+	confirmedInNewChain := make(map[string]bool)
+	for _, bi := range newChain {
+		if bi != nil && bi.Block != nil {
+			for _, tx := range bi.Block.Transactions {
+				confirmedInNewChain[tx.ID] = true
 			}
-			utxo.Add(tx)
-		}
-	}
-	n.UTXO = utxo
-
-	// -----------------------------
-	// 3️⃣ 再 rebuild mempool（用新 UTXO）
-	// -----------------------------
-	confirmed := make(map[string]bool)
-	for _, blk := range fullChain {
-		if blk == nil { // 🚀 防護罩 2：防止讀取空區塊的交易
-			continue
-		}
-		for _, tx := range blk.Transactions {
-			confirmed[tx.ID] = true
 		}
 	}
 
-	oldMempool := n.Mempool.GetAll()
-	n.Mempool.Clear()
+	// 3️⃣ 找出需要退回 Mempool 的交易 (舊鏈被踢出的 + 原本就在池子裡的)
+	txsToRestore := make(map[string][]byte)
 
-	for txid, bytes := range oldMempool {
-		if confirmed[txid] {
-			continue
-		}
-		n.Mempool.AddTxRBF(txid, bytes, n.UTXO)
-	}
-
-	// -----------------------------
-	// 4️⃣ txindex 重建
-	// -----------------------------
+	// A. 抓出舊鏈中沒有被新鏈打包的交易
 	for _, old := range oldChain {
-		if old != nil && old.Block != nil { // 🚀 防護罩 3：確保舊區塊存在才移除索引
+		if old != nil && old.Block != nil {
+			for _, tx := range old.Block.Transactions {
+				if !tx.IsCoinbase && !confirmedInNewChain[tx.ID] {
+					txsToRestore[tx.ID] = tx.Serialize()
+				}
+			}
+		}
+	}
+
+	// B. 保留原本就在 Mempool 裡，且沒被新鏈打包的交易
+	for txid, bytes := range n.Mempool.GetAll() {
+		if !confirmedInNewChain[txid] {
+			txsToRestore[txid] = bytes
+		}
+	}
+
+	// 4️⃣ 安全地重建 Mempool！
+	n.Mempool.Clear()
+	for txid, bytes := range txsToRestore {
+		// 🚀 關鍵防護：直接塞回底層 Map，不觸發複雜驗證，完美避開死鎖！
+		n.Mempool.Txs[txid] = bytes
+	}
+
+	// 5️⃣ 重建交易索引 (TxIndex)
+	for _, old := range oldChain {
+		if old != nil && old.Block != nil {
 			n.removeTxIndex(old.Block)
 		}
 	}
 	for _, bi := range newChain {
-		if bi != nil && bi.Block != nil { // 🚀 防護罩 4：確保新區塊存在才建立索引
+		if bi != nil && bi.Block != nil {
 			n.indexTransactions(bi.Block, bi)
 		}
 	}
 
-	// -----------------------------
-	// 5️⃣ 更新 Node 状态
-	// -----------------------------
-	n.Chain = fullChain
-	n.Best = newTip
-
-	log.Println("🔁 链重组完成，mempool / UTXO / txindex 已全部同步")
+	log.Printf("🔁 鏈重組完成！成功將 %d 筆交易退回 Mempool 等待重發。\n", len(txsToRestore))
 }
 
 // --------------------
@@ -872,4 +867,13 @@ func (n *Node) HasMissingBodies() bool {
 		}
 	}
 	return false
+}
+
+func (n *Node) Lock() {
+	n.mu.Lock()
+}
+
+// Unlock 公開的解鎖函數
+func (n *Node) Unlock() {
+	n.mu.Unlock()
 }
