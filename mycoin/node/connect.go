@@ -184,19 +184,23 @@ func (n *Node) connectBlock(block *blockchain.Block, parent *BlockIndex) bool {
 	// ----------------------------------------------------
 	// 6️⃣ 處理孤塊
 	// ----------------------------------------------------
-	n.attachOrphans(hashHex)
+	//n.attachOrphans(hashHex)
 
 	return true
 }
 func (n *Node) attachOrphans(parentHash string) {
+	n.mu.Lock() // 🔒 短暫上鎖，安全提取孤塊名單
 	orphans := n.Orphans[parentHash]
 	if len(orphans) == 0 {
+		n.mu.Unlock()
 		return
 	}
 	delete(n.Orphans, parentHash)
+	n.mu.Unlock() // 🔓 拿完名單立刻解鎖！
 
+	// 解鎖後再慢慢加入區塊，完美避開死鎖！
 	for _, blk := range orphans {
-		n.AddBlock(blk) // 尝试看 orphan 是否能加入
+		n.AddBlock(blk)
 	}
 }
 

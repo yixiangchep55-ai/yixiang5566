@@ -349,15 +349,7 @@ func (h *Handler) handleBlock(peer *Peer, msg *Message) {
 		parent.Children = append(parent.Children, bi)
 	}
 
-	// 6. 處理孤立塊
-	if orphans, ok := h.Node.Orphans[hashHex]; ok {
-		delete(h.Node.Orphans, hashHex)
-		for _, orphan := range orphans {
-			h.handleBlock(peer, &Message{Type: MsgBlock, Data: orphan})
-		}
-	}
-
-	// 7. [修復問題1] 同步接力邏輯
+	// 6. [修復問題1] 同步接力邏輯
 
 	// 如果我們原本在同步中
 	if h.Node.IsSyncing {
