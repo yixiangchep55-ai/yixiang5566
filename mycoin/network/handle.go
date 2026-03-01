@@ -252,6 +252,7 @@ func (h *Handler) handleGetData(peer *Peer, msg *Message) {
 	case "tx":
 		tx, ok := h.Node.Mempool.Get(req.Hash)
 		if !ok {
+			log.Println("⚠️ [Network] 對方索取交易，但 Mempool 找不到:", req.Hash)
 			return
 		}
 		peer.Send(Message{
@@ -563,8 +564,8 @@ func (h *Handler) broadcastTxInv(txid string) {
 }
 
 func (h *Handler) BroadcastLocalTx(tx blockchain.Transaction) {
-	txBytes := tx.Serialize()
-	txid := blockchain.HashTxBytes(txBytes)
+	// ✅ 直接使用交易原本的 ID！保證跟 Mempool 的 Key 一模一樣！
+	txid := tx.ID
 
 	log.Println("📣 broadcast local tx:", txid)
 

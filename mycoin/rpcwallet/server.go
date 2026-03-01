@@ -138,6 +138,14 @@ func (s *RPCServer) handleRPC(w http.ResponseWriter, r *http.Request) {
 		}
 		amount := int(amountFloat)
 
+		fee := 0
+		if len(req.Params) >= 3 {
+			feeFloat, ok := req.Params[2].(float64)
+			if ok {
+				fee = int(feeFloat)
+			}
+		}
+
 		s.Node.Lock()
 
 		// 1️⃣ 构造未签名交易
@@ -145,6 +153,7 @@ func (s *RPCServer) handleRPC(w http.ResponseWriter, r *http.Request) {
 			s.Wallet.Address, // from
 			toAddr,
 			amount,
+			fee,
 			s.Node.UTXO,
 		)
 

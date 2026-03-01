@@ -52,13 +52,18 @@ func BuildTransaction(
 	fromAddr string,
 	toAddr string,
 	amount int,
+	fee int, // 🚀 1. 新增：手續費參數
 	utxoSet *blockchain.UTXOSet,
 ) (*blockchain.Transaction, error) {
 
+	// 🚀 2. 新增：計算總共需要的錢 (匯給對方的錢 + 手續費)
+	targetAmount := amount + fee
+
 	// 1️⃣ 选 UTXO（fromAddr 只用于选钱）
-	utxos, total := SelectUTXO(utxoSet, fromAddr, amount)
+	// 注意這裡要傳入 targetAmount 去找錢包拿錢！
+	utxos, total := SelectUTXO(utxoSet, fromAddr, targetAmount)
 	if utxos == nil {
-		return nil, fmt.Errorf("insufficient funds. [Debug] From: %s, 尝试找金额: %d, 但找不到足够的UTXO", fromAddr, amount)
+		return nil, fmt.Errorf("insufficient funds. [Debug] From: %s, 尝试找金额 (含手續費): %d, 但找不到足够的UTXO", fromAddr, targetAmount)
 	}
 
 	// 2️⃣ 构造 inputs（⚠️ 不再写 From）
@@ -74,12 +79,13 @@ func BuildTransaction(
 	// 3️⃣ 构造 outputs
 	var outputs []blockchain.TxOutput
 	outputs = append(outputs, blockchain.TxOutput{
-		Amount: amount,
+		Amount: amount, // 給對方原本的金額 (不含手續費)
 		To:     toAddr,
 	})
 
 	// 4️⃣ 找零
-	if change := total - amount; change > 0 {
+	// 🚀 3. 修改：找零給自己 = 總共拿出來的錢 - 給對方的錢 - 手續費！
+	if change := total - amount - fee; change > 0 {
 		outputs = append(outputs, blockchain.TxOutput{
 			Amount: change,
 			To:     fromAddr,
