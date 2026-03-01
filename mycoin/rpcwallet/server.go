@@ -120,8 +120,8 @@ func (s *RPCServer) handleRPC(w http.ResponseWriter, r *http.Request) {
 
 	case "sendtoaddress":
 
-		if len(req.Params) != 2 {
-			s.writeError(w, req.ID, "usage: sendtoaddress <to> <amount>")
+		if len(req.Params) < 2 {
+			s.writeError(w, req.ID, "usage: sendtoaddress <to> <amount> [fee]")
 			return
 		}
 
