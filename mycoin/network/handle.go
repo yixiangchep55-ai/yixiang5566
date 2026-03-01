@@ -540,6 +540,7 @@ func (h *Handler) handleTx(peer *Peer, msg *Message) {
 	// 3️⃣ 廣播給其他節點
 	h.broadcastTxInv(tx.ID)
 }
+
 func (h *Handler) broadcastTxInv(txid string) {
 	if h.Node.SyncState != node.SyncSynced {
 		return

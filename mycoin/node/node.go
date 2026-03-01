@@ -188,42 +188,37 @@ func (n *Node) Mine() {
 // 添加交易到 Mempool (最終完全體：支援 RBF)
 // --------------------
 func (n *Node) AddTx(tx blockchain.Transaction) bool {
-	// ==========================================
-	// 🛡️ 防護罩：鎖上 Node 大門！
-	// 防止驗證交易或計算手續費時，新區塊剛好進來覆寫 UTXO
-	// ==========================================
+	fmt.Println("👉 [X-Ray] 準備鎖定 n.mu 大門...")
 	n.mu.Lock()
 	defer n.mu.Unlock()
+	fmt.Println("👉 [X-Ray] 成功鎖定 n.mu，開始執行 VerifyTx...")
 
-	// 1️⃣ 基礎防禦：呼叫「驗鈔機」
 	if err := VerifyTx(tx, n.UTXO); err != nil {
 		fmt.Printf("❌ 交易驗證失敗被拒絕 (%s): %v\n", tx.ID, err)
 		return false
 	}
 
-	// 2️⃣ 檢查是否已經在 Mempool 裡了
+	fmt.Println("👉 [X-Ray] VerifyTx 通過，開始執行 Mempool.Has...")
 	if n.Mempool.Has(tx.ID) {
 		return false
 	}
 
-	// 3️⃣ 檢查 Mempool 內部的雙花衝突 (可選，因為 RBF 內部也會查)
+	fmt.Println("👉 [X-Ray] Mempool.Has 通過，開始執行 Mempool.HasDoubleSpend...")
 	if n.Mempool.HasDoubleSpend(&tx) {
 		fmt.Printf("❌ 交易被拒絕：與 Mempool 內的交易發生雙花衝突 (%s)\n", tx.ID)
 		return false
 	}
 
-	// ==========================================
-	// 💎 釋放 RBF 的真正力量！
-	// 因為現在已經有 n.mu.Lock() 保護，把 n.UTXO 傳給它去算手續費絕對安全！
-	// ==========================================
+	fmt.Println("👉 [X-Ray] Mempool.HasDoubleSpend 通過，開始進入 AddTxRBF 黑洞...")
 	ok := n.Mempool.AddTxRBF(tx.ID, tx.Serialize(), n.UTXO)
 
+	fmt.Println("👉 [X-Ray] 成功逃出 AddTxRBF 黑洞！")
 	if !ok {
 		fmt.Println("❌ 交易被 Mempool 拒絕 (可能手續費太低或 RBF 失敗)")
 		return false
 	}
 
-	fmt.Printf("📥 ✅ 交易 %s 成功進入 Mempool，等待打包\n", tx.ID)
+	fmt.Printf("📥 ✅ [X-Ray] 交易 %s 成功進入 Mempool，等待打包\n", tx.ID)
 	return true
 }
 

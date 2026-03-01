@@ -153,6 +153,10 @@ func (m *Mempool) Clear() {
 }
 
 func (m *Mempool) HasDoubleSpend(tx *blockchain.Transaction) bool {
+	// 🛡️ 必須加上這把鎖，保護 m.Spent 不被併發修改
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
 	for _, in := range tx.Inputs {
 		key := utxoKey(in.TxID, in.Index)
 		if _, used := m.Spent[key]; used {
@@ -180,7 +184,6 @@ func (m *Mempool) addTxUnsafe(
 	tx *blockchain.Transaction,
 	txBytes []byte,
 ) {
-
 	m.Txs[txid] = txBytes
 
 	if m.DB != nil {
@@ -191,8 +194,8 @@ func (m *Mempool) addTxUnsafe(
 		key := utxoKey(in.TxID, in.Index)
 		m.Spent[key] = txid
 
-		// 🔥 CPFP 依赖记录
-		if m.Has(in.TxID) {
+		// 🚀 關鍵修復：直接檢查底層 Map，絕對不要呼叫 m.Has()！
+		if _, exists := m.Txs[in.TxID]; exists {
 			m.Parents[txid] = append(m.Parents[txid], in.TxID)
 			m.Children[in.TxID] = append(m.Children[in.TxID], txid)
 		}
