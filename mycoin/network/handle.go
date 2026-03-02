@@ -545,13 +545,12 @@ func (h *Handler) handleAddr(peer *Peer, msg *Message) {
 
 	addedCount := 0
 	for _, addr := range addrs {
-
-		if addr == pm.ListenOn ||
-			addr == h.LocalVersion.NodeID {
+		// 1. 基礎過濾：不連自己
+		if addr == pm.ListenOn || addr == h.LocalVersion.NodeID {
 			continue
 		}
 
-		// 跳过已连接
+		// 2. 檢查是否已經在 Active 名單中
 		pm.mu.Lock()
 		_, exists := pm.Active[addr]
 		pm.mu.Unlock()
@@ -559,18 +558,29 @@ func (h *Handler) handleAddr(peer *Peer, msg *Message) {
 			continue
 		}
 
-		// 加入 addrManager
+		// 3. 加入地址管理器
 		if pm.AddrMgr.Add(addr) {
 			addedCount++
+
+			// 🔥🔥🔥 [偵探加強邏輯] 🔥🔥🔥
+			// 不要等 ensurePeers，只要目前連線數還沒滿，就直接開 Goroutine 去連！
+			pm.mu.Lock()
+			currentActive := len(pm.Active)
+			maxPeers := pm.MaxPeers
+			pm.mu.Unlock()
+
+			if currentActive < maxPeers {
+				log.Printf("🌐 [Network] 發現新鄰居 %s，立即嘗試主動建立直連...", addr)
+				go pm.Connect(addr) // 直接發起連線
+			}
 		}
 	}
 
 	log.Printf("🌍 Received %d new addrs from %s", addedCount, peer.Addr)
 
-	// ⭐ 自动尝试连接更多 peer（你已有 ensurePeers）
+	// 依然保留原有的確保邏輯作為備援
 	pm.ensurePeers()
 }
-
 func (h *Handler) handleTx(peer *Peer, msg *Message) {
 	var payload TxPayload
 	if err := decode(msg.Data, &payload); err != nil {

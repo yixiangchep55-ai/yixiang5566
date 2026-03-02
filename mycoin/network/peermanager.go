@@ -167,12 +167,18 @@ func (pm *PeerManager) onNewConn(conn net.Conn, outbound bool) {
 		pm.Inbound++
 	}
 	pm.mu.Unlock()
+	// ==========================================
+	// 🕵️ 大偵探新增：地址廣播 (媒人牽線邏輯)
+	// 如果是別人連進來 (!outbound)，我們就把他介紹給其他人！
+	// ==========================================
+	if !outbound {
+		go pm.RelayAddress(peer.Addr)
+	}
 
 	// ==========================================
-	// 🕵️ 大偵探建議：在此處加入安全檢查
+	// 啟動讀循環 (確保能收到對方的回應)
 	// ==========================================
 
-	// 啟動讀循環 (搬到發送 Version 之前，確保能收到對方的回應)
 	go peer.ReadLoop(pm.Network.Handler.OnMessage)
 
 	// outbound：主動發 version
@@ -193,6 +199,33 @@ func (pm *PeerManager) onNewConn(conn net.Conn, outbound bool) {
 			},
 		})
 		log.Println("🚀 Sent version handshake to", peer.Addr)
+	}
+}
+
+func (pm *PeerManager) RelayAddress(newAddr string) {
+	// 🕵️ 偵探校正：只取 IP，強制補上你的 P2P 監聽埠口 (9001)
+	host, _, err := net.SplitHostPort(newAddr)
+	if err != nil {
+		log.Println("⚠️ [Relay] 無法解析地址:", newAddr)
+		return
+	}
+	correctAddr := host + ":9001"
+
+	pm.mu.Lock()
+	defer pm.mu.Unlock()
+
+	msg := Message{
+		Type: MsgAddr,
+		Data: []string{correctAddr},
+	}
+
+	for addr, peer := range pm.Active {
+		// 1. 不發給剛連進來的那個人
+		// 2. 只發給已經握手成功 (StateActive) 的老朋友
+		if addr != newAddr && peer.State == StateActive {
+			log.Printf("📢 [Relay] 向 %s 推薦新節點: %s\n", addr, correctAddr)
+			peer.Send(msg)
+		}
 	}
 }
 
