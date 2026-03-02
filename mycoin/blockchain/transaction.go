@@ -197,6 +197,17 @@ func DeserializeTransaction(b []byte) (*Transaction, error) {
 }
 
 func (tx *Transaction) Fee(utxo *UTXOSet) int {
+	// 🛡️ 防護罩 1：防止 tx 本身是幽靈 (解決 addr=0x40 的元兇！)
+	if tx == nil {
+		return 0
+	}
+
+	// 🛡️ 防護罩 2：防止沒傳入資料庫
+	if utxo == nil {
+		return 0
+	}
+
+	// 現在這裡絕對安全了，不會再爆炸
 	if tx.IsCoinbase {
 		return 0
 	}
@@ -204,8 +215,13 @@ func (tx *Transaction) Fee(utxo *UTXOSet) int {
 	inSum := 0
 	for _, in := range tx.Inputs {
 		out, ok := utxo.Get(in.TxID, in.Index)
+
+		// 🛡️ 防護罩 3：找不到鈔票時，優雅地處理
+		// (如果你程式裡的 out 是指標類型 *TxOutput，請把條件改成 if !ok || out == nil)
 		if !ok {
-			return 0 // 输入不存在，视为无效或 fee=0
+			// 找不到鈔票，代表它可能是一筆 CPFP 交易 (父母還在 Mempool)
+			// 為了安全，我們回傳 0，先不給它手續費優先權
+			return 0
 		}
 		inSum += out.Amount
 	}

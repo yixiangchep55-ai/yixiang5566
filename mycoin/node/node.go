@@ -283,11 +283,14 @@ func (n *Node) AddBlock(block *blockchain.Block) bool {
 	// 2. 檢查父塊是否存在 (Orphan Check)
 	// ---------------------------------------------------------
 	parentIndex, exists := n.Blocks[prevHex]
-	if !exists {
+
+	// 🛡️ 升級防線：不只要 exists (有標頭)，還必須確保它的「實體資料 (Block)」真的存在！
+	// 如果 parentIndex.Block == nil，代表它也是一個等待補齊資料的「半孤塊」
+	if !exists || parentIndex.Block == nil {
 		// 這是孤兒塊，存入孤兒池
-		log.Printf("⚠️ 發現孤塊 (缺少父塊 %s): 高度 %d\n", prevHex, block.Height)
+		log.Printf("⚠️ 發現孤塊或父塊實體尚未就緒 (缺少父塊 %s): 高度 %d\n", prevHex, block.Height)
 		n.AddOrphan(block)
-		n.mu.Unlock() // 🔓 【必須補上 2】：提早離開前解鎖！
+		n.mu.Unlock() // 🔓 提早離開前解鎖！
 		return false
 	}
 

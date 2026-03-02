@@ -15,6 +15,16 @@ import (
 // --------------------
 func (n *Node) connectBlock(block *blockchain.Block, parent *BlockIndex) bool {
 
+	// 🛡️ 終極防禦裝甲：確保傳進來的 parent 絕對是完整且合法的！
+	if parent == nil {
+		log.Panic("嚴重錯誤：connectBlock 收到了 nil 的 parent！這是系統邏輯漏洞。")
+		return false
+	}
+	if parent.Block == nil {
+		log.Panic("嚴重錯誤：connectBlock 收到了沒有 Block 實體的 parent！這不該發生。")
+		return false
+	}
+
 	// ----------------------------------------------------
 	// 1️⃣ 驗證難度 (Bits Check)
 	// ----------------------------------------------------
@@ -89,19 +99,19 @@ func (n *Node) connectBlock(block *blockchain.Block, parent *BlockIndex) bool {
 	}
 
 	// 建立父子連結（不論 exists 與否都確保一下）
-	if parent != nil {
-		// 檢查是否已經在 Children 裡，避免重複添加
-		alreadyChild := false
-		for _, child := range parent.Children {
-			if child.Hash == hashHex {
-				alreadyChild = true
-				break
-			}
-		}
-		if !alreadyChild {
-			parent.Children = append(parent.Children, bi)
+
+	// 檢查是否已經在 Children 裡，避免重複添加
+	alreadyChild := false
+	for _, child := range parent.Children {
+		if child.Hash == hashHex {
+			alreadyChild = true
+			break
 		}
 	}
+	if !alreadyChild {
+		parent.Children = append(parent.Children, bi)
+	}
+
 	// ----------------------------------------------------
 	// 4️⃣ 持久化 (先存 DB，確保重啟不丟失)
 	// ----------------------------------------------------

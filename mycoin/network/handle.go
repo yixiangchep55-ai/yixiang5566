@@ -310,16 +310,15 @@ func (h *Handler) handleBlock(peer *Peer, msg *Message) {
 		h.Node.Blocks[hashHex] = bi
 	}
 
-	// 3. 檢查父塊是否存在
+	// ---------------------------------------------------------
+	// 3. 檢查父塊是否存在 (終極孤塊檢查)
+	// ---------------------------------------------------------
 	parent := h.Node.Blocks[prevHex]
+
+	// 情況 A：完全不認識爸爸 (連 Header 都沒有)
 	if parent == nil {
 		fmt.Printf("⚠️ 缺少父塊 Header %s，存入孤立池\n", prevHex)
 		h.Node.AddOrphan(blk)
-
-		locators := h.buildBlockLocator()
-		fmt.Printf("🔍 [Debug] 發送 GetHeaders，Locator 第一個 Hash: %s (總數: %d)\n",
-			locators[0], len(locators))
-		// 觸發 Header 下載
 		peer.Send(Message{
 			Type: MsgGetHeaders,
 			Data: GetHeadersPayload{Locators: h.buildBlockLocator()},
@@ -327,13 +326,32 @@ func (h *Handler) handleBlock(peer *Peer, msg *Message) {
 		return
 	}
 
-	// 4. 驗證並寫入資料庫
-	success := h.Node.AddBlock(blk)
-	if !success {
-		fmt.Printf("❌ 區塊 %d 驗證失敗\n", blk.Height)
+	// 情況 B：認識爸爸，但爸爸只有頭沒有身體 (半孤塊)
+	if parent.Block == nil {
+		fmt.Printf("⚠️ 父塊 %s 只有標頭缺少實體，將區塊 %d 存入孤立池\n", prevHex, blk.Height)
+		h.Node.AddOrphan(blk)
+
+		// 既然我們已經有 Header 了，我們不需要 GetHeaders，我們直接要他的身體！
+		peer.Send(Message{
+			Type: MsgGetData, // 呼叫你要區塊資料的指令 (你應該有定義這個)
+			Data: GetDataPayload{
+				Type: "block",
+				Hash: prevHex, // 跟對方要爸爸的實體資料
+			},
+		})
 		return
 	}
 
+	// ---------------------------------------------------------
+	// 4. 驗證並寫入資料庫
+	// ---------------------------------------------------------
+	// 能走到這裡，代表 parent 絕對存在，而且 parent.Block 絕對不是 nil！
+	success := h.Node.AddBlock(blk)
+	if !success {
+		// 這裡的失敗就是真的失敗了 (比如雙花、簽名錯誤等惡意攻擊)
+		fmt.Printf("❌ 區塊 %d (%s) 驗證失敗，拒絕接收\n", blk.Height, hashHex)
+		return
+	}
 	// 填充內存資料
 	bi.Block = blk
 	bi.Parent = parent

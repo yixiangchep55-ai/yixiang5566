@@ -68,7 +68,12 @@ func (m *Miner) Mine(includeMempool bool) *blockchain.Block {
 			return pkgs[i].Fee > pkgs[j].Fee
 		})
 		for _, pkg := range pkgs {
+
 			for _, tx := range pkg.Txs {
+				if tx == nil {
+					continue
+				}
+
 				if len(txs) >= MaxTxPerBlock {
 					break
 				}
@@ -156,11 +161,24 @@ func (m *Miner) collectAncestors(txid string, visited map[string]bool) []*blockc
 	var result []*blockchain.Transaction
 
 	for _, parent := range m.Node.GetMempool().Parents[txid] {
-		result = append(result, m.collectAncestors(parent, visited)...)
+		// 遞迴收集父母，過濾掉 nil 的情況
+		parents := m.collectAncestors(parent, visited)
+		if parents != nil {
+			result = append(result, parents...)
+		}
 	}
 
-	txBytes := m.Node.GetMempool().Txs[txid]
-	tx, _ := blockchain.DeserializeTransaction(txBytes)
+	txBytes, exists := m.Node.GetMempool().Txs[txid]
+	// 🛡️ 防護罩 1：確保交易真的還在 Mempool 裡
+	if !exists {
+		return result
+	}
+
+	tx, err := blockchain.DeserializeTransaction(txBytes)
+	// 🛡️ 防護罩 2：確保反序列化成功，不是 nil
+	if err != nil || tx == nil {
+		return result
+	}
 
 	result = append(result, tx)
 	return result
