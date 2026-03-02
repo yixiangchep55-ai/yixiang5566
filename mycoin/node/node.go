@@ -653,26 +653,42 @@ func (n *Node) RebuildUTXO() error {
 		}
 	}
 
-	// 2) 按顺序遍历链上的每个区块
+	// 2) 按順序遍歷鏈上的每個區塊
 	for _, block := range n.Chain {
 		if block == nil {
 			continue
 		}
 
 		for _, tx := range block.Transactions {
-			// 非 coinbase 花费输入
+			// 非 coinbase 花費輸入
 			if !tx.IsCoinbase {
 				utxo.Spend(tx)
 			}
-			// 添加输出
+			// 添加輸出
 			utxo.Add(tx)
 		}
 	}
 
-	// 3) 替换旧 UTXO
+	// 3) 替換舊 UTXO (記憶體更新)
 	n.UTXO = utxo
 
-	fmt.Println("✅ FastSync: UTXO rebuild complete.")
+	// ==========================================
+	// 💾 4) 終極快取存檔：把算好的餘額寫入資料庫！
+	// ==========================================
+	if n.DB != nil {
+		fmt.Printf("💾 正在將 %d 筆 UTXO 快取寫入硬碟...\n", len(n.UTXO.Set))
+		for txidOut, u := range n.UTXO.Set {
+			utxoBytes, err := json.Marshal(u)
+			if err == nil {
+				n.DB.Put("utxo", txidOut, utxoBytes)
+			} else {
+				fmt.Println("❌ UTXO 存檔失敗:", err)
+			}
+		}
+	}
+	// ==========================================
+
+	fmt.Println("✅ FastSync: UTXO rebuild complete & saved to DB.")
 	return nil
 }
 
