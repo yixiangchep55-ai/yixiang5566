@@ -405,7 +405,8 @@ func (h *Handler) handleBlock(peer *Peer, msg *Message) {
 func (h *Handler) finishSyncing() {
 	fmt.Println("📥 所有區塊內容已補齊，正在切換至最新鏈狀態...")
 
-	h.Node.RebuildUTXO()
+	// ❌ 注意：這裡原本有一個 h.Node.RebuildUTXO()，我幫你刪掉了，
+	// 因為下面第 4 步還會再呼叫一次，不需要重複執行浪費 CPU 時間。
 
 	// 1. 更新標誌位
 	h.Node.BodiesSynced = true
@@ -421,11 +422,18 @@ func (h *Handler) finishSyncing() {
 	}
 	h.Node.Chain = newMainChain
 
-	// 3. 全局重建 UTXO (確保同步後的餘額與狀態絕對正確)
+	// ==========================================
+	// 💾 3. 終極存檔：把最新高度寫進資料庫，徹底治好失憶症！(你漏掉這一步了！)
+	// ==========================================
+	if h.Node.Best != nil {
+		h.Node.DB.Put("meta", "best", []byte(h.Node.Best.Hash))
+		fmt.Printf("💾 已將最新鏈頭存檔至硬碟: 高度 %d\n", h.Node.Best.Height)
+	}
+
+	// 4. 全局重建 UTXO (確保同步後的餘額與狀態絕對正確)
 	h.Node.RebuildUTXO()
 
 	fmt.Printf("✅ 同步完成！當前高度: %d, Tip: %s\n", h.Node.Best.Height, h.Node.Best.Hash)
-
 }
 
 func (h *Handler) broadcastInvExcept(hash string, except *Peer) {
