@@ -203,9 +203,15 @@ func (m *Mempool) addTxUnsafe(
 }
 
 func (m *Mempool) removeTxUnsafe(txid string) {
-	txBytes := m.Txs[txid]
+	// 🛡️ 防彈衣：先檢查這筆交易到底在不在 Mempool 裡？
+	txBytes, exists := m.Txs[txid]
+	if !exists || len(txBytes) == 0 {
+		return // 不在池子裡 (例如 Coinbase 交易)，直接結束，不用刪除！
+	}
+
 	tx, err := blockchain.DeserializeTransaction(txBytes)
-	if err == nil {
+	// 🛡️ 雙重保險：確保 tx 不是 nil
+	if err == nil && tx != nil {
 		for _, in := range tx.Inputs {
 			key := utxoKey(in.TxID, in.Index)
 			delete(m.Spent, key)

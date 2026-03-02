@@ -404,6 +404,8 @@ func (h *Handler) handleBlock(peer *Peer, msg *Message) {
 func (h *Handler) finishSyncing() {
 	fmt.Println("📥 所有區塊內容已補齊，正在切換至最新鏈狀態...")
 
+	h.Node.RebuildUTXO()
+
 	// 1. 更新標誌位
 	h.Node.BodiesSynced = true
 	h.Node.SyncState = node.SyncSynced

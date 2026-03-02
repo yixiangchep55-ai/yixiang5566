@@ -272,6 +272,7 @@ func (n *Node) AddBlock(block *blockchain.Block) bool {
 		if bi.Block == nil {
 			fmt.Printf("📦 收到區塊體，補齊資料: 高度 %d\n", bi.Height)
 			bi.Block = block
+
 		} else {
 			// 情況 B: 已經完全存在了 (Body 也有了)，直接忽略
 			n.mu.Unlock() // 🔓 【必須補上 1】：提早離開前解鎖！
