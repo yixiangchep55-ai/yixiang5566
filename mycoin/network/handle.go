@@ -352,6 +352,7 @@ func (h *Handler) handleBlock(peer *Peer, msg *Message) {
 		fmt.Printf("❌ 區塊 %d (%s) 驗證失敗，拒絕接收\n", blk.Height, hashHex)
 		return
 	}
+
 	// 填充內存資料
 	bi.Block = blk
 	bi.Parent = parent
