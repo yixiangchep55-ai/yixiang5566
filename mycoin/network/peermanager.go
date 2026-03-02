@@ -168,8 +168,22 @@ func (pm *PeerManager) onNewConn(conn net.Conn, outbound bool) {
 	}
 	pm.mu.Unlock()
 
-	// outbound：主动发 version
+	// ==========================================
+	// 🕵️ 大偵探建議：在此處加入安全檢查
+	// ==========================================
+
+	// 啟動讀循環 (搬到發送 Version 之前，確保能收到對方的回應)
+	go peer.ReadLoop(pm.Network.Handler.OnMessage)
+
+	// outbound：主動發 version
 	if outbound {
+		// 防止 Node 或 Best 還沒初始化完成導致 nil panic
+		if pm.Network.Node == nil || pm.Network.Node.Best == nil {
+			log.Println("⚠️ [Network] Node 尚未就緒，暫緩發送 Handshake 給", peer.Addr)
+			// 你可以選擇斷開連線，或簡單地 return 讓對方稍後重試
+			return
+		}
+
 		peer.Send(Message{
 			Type: MsgVersion,
 			Data: VersionPayload{
@@ -180,9 +194,6 @@ func (pm *PeerManager) onNewConn(conn net.Conn, outbound bool) {
 		})
 		log.Println("🚀 Sent version handshake to", peer.Addr)
 	}
-
-	// 启动读循环
-	go peer.ReadLoop(pm.Network.Handler.OnMessage)
 }
 
 func (pm *PeerManager) ensurePeers() {
