@@ -305,6 +305,7 @@ func (h *Handler) handleBlock(peer *Peer, msg *Message) {
 			PrevHash:   prevHex,
 			Height:     blk.Height,
 			CumWorkInt: node.WorkFromTarget(blk.Target),
+			Bits:       blk.Bits,
 		}
 		bi.CumWork = bi.CumWorkInt.Text(16)
 		h.Node.Blocks[hashHex] = bi
