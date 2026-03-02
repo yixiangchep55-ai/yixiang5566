@@ -403,10 +403,38 @@ func (h *Handler) handleBlock(peer *Peer, msg *Message) {
 }
 
 func (h *Handler) finishSyncing() {
-	fmt.Println("📥 所有區塊內容已補齊，正在切換至最新鏈狀態...")
+	fmt.Println("📥 所有區塊內容已補齊，準備切換至最新鏈狀態...")
 
-	// ❌ 注意：這裡原本有一個 h.Node.RebuildUTXO()，我幫你刪掉了，
-	// 因為下面第 4 步還會再呼叫一次，不需要重複執行浪費 CPU 時間。
+	// ====================================================
+	// 🚀 關鍵修復：在算錢之前，先找出剛剛下載的區塊中，
+	// 工作量最大（最新）的那個，並把 n.Best 指標移過去！
+	// ====================================================
+	h.Node.Lock()
+	var actualBest *node.BlockIndex
+	maxWork := big.NewInt(0)
+
+	for _, bi := range h.Node.Blocks {
+		// 必須要有實體區塊，且工作量比目前找到的還大
+		if bi.Block != nil && bi.CumWorkInt.Cmp(maxWork) > 0 {
+			maxWork = bi.CumWorkInt
+			actualBest = bi
+		}
+	}
+
+	// 如果找到了更強的鏈，就更新 Best 指標
+	if actualBest != nil && (h.Node.Best == nil || actualBest.CumWorkInt.Cmp(h.Node.Best.CumWorkInt) > 0) {
+
+		// ❌ 原本是 currentHeight := 0
+		var currentHeight uint64 = 0 // ✅ 改成這樣！明確告訴 Go 它是 uint64
+
+		if h.Node.Best != nil {
+			currentHeight = h.Node.Best.Height
+		}
+		fmt.Printf("🎯 找到更強的主鏈！將 Best 標籤從高度 %d 移動到 %d\n", currentHeight, actualBest.Height)
+		h.Node.Best = actualBest
+	}
+	h.Node.Unlock()
+	// ====================================================
 
 	// 1. 更新標誌位
 	h.Node.BodiesSynced = true
@@ -415,7 +443,7 @@ func (h *Handler) finishSyncing() {
 
 	// 2. 刷新主鏈視角 (n.Chain)
 	newMainChain := []*blockchain.Block{}
-	cur := h.Node.Best
+	cur := h.Node.Best // 👈 現在這個 cur 已經是最新的高度了！
 	for cur != nil && cur.Block != nil {
 		newMainChain = append([]*blockchain.Block{cur.Block}, newMainChain...)
 		cur = cur.Parent
@@ -423,7 +451,7 @@ func (h *Handler) finishSyncing() {
 	h.Node.Chain = newMainChain
 
 	// ==========================================
-	// 💾 3. 終極存檔：把最新高度寫進資料庫，徹底治好失憶症！(你漏掉這一步了！)
+	// 💾 3. 終極存檔：把最新高度寫進資料庫，徹底治好失憶症！
 	// ==========================================
 	if h.Node.Best != nil {
 		h.Node.DB.Put("meta", "best", []byte(h.Node.Best.Hash))
@@ -431,11 +459,13 @@ func (h *Handler) finishSyncing() {
 	}
 
 	// 4. 全局重建 UTXO (確保同步後的餘額與狀態絕對正確)
+	// 👈 因為前面的 n.Chain 已經更新到最新，這裡就會算到 3950 元！
 	h.Node.RebuildUTXO()
 
-	fmt.Printf("✅ 同步完成！當前高度: %d, Tip: %s\n", h.Node.Best.Height, h.Node.Best.Hash)
+	if h.Node.Best != nil {
+		fmt.Printf("✅ 同步完成！當前高度: %d, Tip: %s\n", h.Node.Best.Height, h.Node.Best.Hash)
+	}
 }
-
 func (h *Handler) broadcastInvExcept(hash string, except *Peer) {
 	h.Network.mu.Lock()
 	defer h.Network.mu.Unlock()
