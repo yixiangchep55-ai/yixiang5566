@@ -180,6 +180,17 @@ func (n *Node) connectBlock(block *blockchain.Block, parent *BlockIndex) bool {
 		n.DB.Put("meta", "best", []byte(n.Best.Hash))
 
 		// ==========================================
+		// 🧹 🕵️ 大偵探新增：清理 Mempool！
+		// 把這個新上鏈區塊裡面的交易，從記憶體池刪除
+		// ==========================================
+		for _, tx := range block.Transactions {
+			if !tx.IsCoinbase { // 👈 拔掉括號！直接讀取變數屬性
+				n.Mempool.Remove(tx.ID) // (請確認你的 Mempool 刪除函數叫 Remove)
+			}
+		}
+		fmt.Printf("🧹 [Mempool] 已清理區塊 %d 中的 %d 筆交易\n", block.Height, len(block.Transactions)-1)
+		// ==========================================
+		// ==========================================
 		// 🚀 關鍵新增：絕對不會漏接的終極重置信號！
 		// 只要確認主鏈真的更新了，就立刻敲響警鐘叫礦工重算！
 		// ==========================================
