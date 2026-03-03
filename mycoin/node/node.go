@@ -192,7 +192,7 @@ func (n *Node) AddTx(tx blockchain.Transaction) bool {
 	// 🕵️ 第一關：門口保全 (手續費檢查)
 	// ==========================================
 	// 注意：這裡直接從當前 UTXO Set 查手續費
-	fee := tx.Fee(n.UTXO)
+	fee := tx.Fee(n.UTXO, n.Mempool.Txs)
 	const MinRelayFee = 5 // 只有手續費 >= 5 元才准進來
 
 	if fee < MinRelayFee {

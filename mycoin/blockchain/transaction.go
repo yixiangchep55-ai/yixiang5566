@@ -196,48 +196,41 @@ func DeserializeTransaction(b []byte) (*Transaction, error) {
 	return &tx, nil
 }
 
-func (tx *Transaction) Fee(utxo *UTXOSet) int {
-	// 🛡️ 防護罩 1：防止 tx 本身是幽靈 (解決 addr=0x40 的元兇！)
-	if tx == nil {
-		return 0
-	}
-
-	// 🛡️ 防護罩 2：防止沒傳入資料庫
-	if utxo == nil {
-		return 0
-	}
-
-	// 現在這裡絕對安全了，不會再爆炸
-	if tx.IsCoinbase {
+// 修改簽名，增加 mempoolTxs 參數
+func (tx *Transaction) Fee(utxo *UTXOSet, mempoolTxs map[string][]byte) int {
+	if tx == nil || utxo == nil || tx.IsCoinbase {
 		return 0
 	}
 
 	inSum := 0
 	for _, in := range tx.Inputs {
+		// [A] 先查正式帳本
 		out, ok := utxo.Get(in.TxID, in.Index)
 
-		// 🛡️ 防護罩 3：找不到鈔票時，優雅地處理
-		// (如果你程式裡的 out 是指標類型 *TxOutput，請把條件改成 if !ok || out == nil)
 		if !ok {
-			// 找不到鈔票，代表它可能是一筆 CPFP 交易 (父母還在 Mempool)
-			// 為了安全，我們回傳 0，先不給它手續費優先權
+			// [B] 🚀 帳本找不到？去 Mempool 找！
+			if parentBytes, inMempool := mempoolTxs[in.TxID]; inMempool {
+				// 解壓老爸的資料
+				parentTx, err := DeserializeTransaction(parentBytes)
+				if err == nil && in.Index < len(parentTx.Outputs) {
+					inSum += parentTx.Outputs[in.Index].Amount
+					continue // 找到老爸的遺產了，繼續處理下一個 Input
+				}
+			}
+
+			// 如果連 Mempool 都找不到，這筆交易真的是幽靈，回傳 0 是正確的
 			return 0
 		}
 		inSum += out.Amount
 	}
 
+	// ... 計算 outSum 和 fee 的部分保持不變 ...
 	outSum := 0
 	for _, out := range tx.Outputs {
 		outSum += out.Amount
 	}
-
-	fee := inSum - outSum
-	if fee < 0 {
-		return 0
-	}
-	return fee
+	return inSum - outSum
 }
-
 func NewTransaction(inputs []TxInput, outputs []TxOutput) *Transaction {
 	tx := &Transaction{
 		Inputs:     inputs,

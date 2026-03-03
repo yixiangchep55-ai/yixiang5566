@@ -52,12 +52,7 @@ func (m *Mempool) Has(txid string) bool {
 	return ok
 }
 
-func (m *Mempool) AddTxRBF(
-	txid string,
-	txBytes []byte,
-	utxo *blockchain.UTXOSet,
-) bool {
-
+func (m *Mempool) AddTxRBF(txid string, txBytes []byte, utxo *blockchain.UTXOSet) bool {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
@@ -68,7 +63,7 @@ func (m *Mempool) AddTxRBF(
 	}
 
 	// 2️⃣ 计算新交易 fee
-	newFee := newTx.Fee(utxo)
+	newFee := newTx.Fee(utxo, m.Txs)
 
 	// 3️⃣ RBF：查找冲突
 	conflicts := m.findConflicts(newTx)
@@ -76,7 +71,7 @@ func (m *Mempool) AddTxRBF(
 		for oldTxid := range conflicts {
 			oldBytes := m.Txs[oldTxid]
 			oldTx, _ := blockchain.DeserializeTransaction(oldBytes)
-			oldFee := oldTx.Fee(utxo)
+			oldFee := oldTx.Fee(utxo, m.Txs)
 
 			if newFee <= oldFee {
 				return false
@@ -234,7 +229,10 @@ func (m *Mempool) findLowestFeeTx(utxo *blockchain.UTXOSet) (string, int) {
 			continue
 		}
 
-		fee := tx.Fee(utxo)
+		// 🚀 修改點：計算手續費時，讓它參考整個 Mempool (m.Txs)
+		// 這樣富兒子的手續費就不會是 0，而是真實的 35 元
+		fee := tx.Fee(utxo, m.Txs)
+
 		if fee < lowestFee {
 			lowestFee = fee
 			lowestTxid = txid
