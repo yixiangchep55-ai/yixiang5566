@@ -22,6 +22,9 @@ type MinerNode interface {
 
 	IsSynced() bool
 	GetResetChan() chan bool
+
+	Lock()   // 👈 增加這行
+	Unlock() // 👈 增加這行
 }
 
 type TxPackage struct {
@@ -186,25 +189,33 @@ func (m *Miner) collectAncestors(txid string, visited map[string]bool) []*blockc
 	}
 	visited[txid] = true
 
+	// 1️⃣ 獲取 Mempool 並鎖定，防止遞迴過程中資料被修改
+	mp := m.Node.GetMempool()
+	// 這裡建議在呼叫 collectAncestors 的最外層（buildPackages）就上鎖
+	// 但如果要在這裡處理，我們需要確保不會造成死鎖 (Deadlock)
+
 	var result []*blockchain.Transaction
 
-	for _, parent := range m.Node.GetMempool().Parents[txid] {
-		// 遞迴收集父母，過濾掉 nil 的情況
-		parents := m.collectAncestors(parent, visited)
-		if parents != nil {
-			result = append(result, parents...)
+	// 🛡️ 防護罩 1：安全讀取 Parents
+	parents, pExists := mp.Parents[txid]
+	if pExists {
+		for _, parent := range parents {
+			anc := m.collectAncestors(parent, visited)
+			if anc != nil {
+				result = append(result, anc...)
+			}
 		}
 	}
 
-	txBytes, exists := m.Node.GetMempool().Txs[txid]
-	// 🛡️ 防護罩 1：確保交易真的還在 Mempool 裡
-	if !exists {
+	// 🛡️ 防護罩 2：安全讀取交易資料
+	txBytes, exists := mp.Txs[txid]
+	if !exists || len(txBytes) == 0 { // 👈 多檢查長度，防止 DeserializeTransaction 吃到空字節
 		return result
 	}
 
 	tx, err := blockchain.DeserializeTransaction(txBytes)
-	// 🛡️ 防護罩 2：確保反序列化成功，不是 nil
 	if err != nil || tx == nil {
+		fmt.Printf("⚠️ [Miner] 交易 %s 資料損毀或格式錯誤: %v\n", txid[:8], err)
 		return result
 	}
 
@@ -213,14 +224,34 @@ func (m *Miner) collectAncestors(txid string, visited map[string]bool) []*blockc
 }
 
 func (m *Miner) buildPackages() []TxPackage {
-	var pkgs []TxPackage
+	// 1️⃣ 第一步：凍結現場 (上鎖)
+	m.Node.Lock()
+	defer m.Node.Unlock()
 
-	for txid := range m.Node.GetMempool().Txs {
-		visited := make(map[string]bool)
-		txs := m.collectAncestors(txid, visited)
+	var pkgs []TxPackage
+	// 🕵️ 新增：全域訪問標記，確保每筆交易只被處理一次
+	globalVisited := make(map[string]bool)
+
+	// 這裡我們直接操作 mp 簡化代碼
+	mp := m.Node.GetMempool()
+
+	for txid := range mp.Txs {
+		// 如果這筆交易已經在之前的某個包裹裡了，直接跳過
+		if globalVisited[txid] {
+			continue
+		}
+
+		// 收集這筆交易及其所有未確認的祖先
+		localVisited := make(map[string]bool)
+		txs := m.collectAncestors(txid, localVisited)
+
+		// 標記這些交易，防止後續重複打包
+		for _, t := range txs {
+			globalVisited[t.ID] = true
+		}
 
 		// ==========================================
-		// 🕵️ 大偵探的「透視算帳法」：支援 CPFP (預支薪水)
+		// 🕵️ 透視算帳法：開始算這整包的價值
 		// ==========================================
 		packageFee := 0
 		for _, tx := range txs {
@@ -228,44 +259,40 @@ func (m *Miner) buildPackages() []TxPackage {
 				continue
 			}
 
-			// 1. 計算這筆交易的出帳總額 (TotalOut)
 			totalOut := 0
 			for _, out := range tx.Outputs {
 				totalOut += out.Amount
 			}
 
-			// 2. 計算這筆交易的入帳總額 (TotalIn)
 			totalIn := 0
 			for _, in := range tx.Inputs {
 				utxoKey := fmt.Sprintf("%s_%d", in.TxID, in.Index)
 
-				// [A] 先去已確認的帳本找找看
+				// [A] 先查已確認的帳本
 				if utxo, ok := m.Node.GetUTXO().Set[utxoKey]; ok {
 					totalIn += utxo.Amount
 				} else {
-					// 🚀 [B] 核心修復：如果帳本找不到，去 Mempool 裡面找未確認的窮老爸！
-					if parentTxBytes, inMempool := m.Node.GetMempool().Txs[in.TxID]; inMempool {
-						// 把窮老爸解壓縮
-						parentTx, err := blockchain.DeserializeTransaction(parentTxBytes)
-						if err == nil && in.Index >= 0 && in.Index < len(parentTx.Outputs) {
-							// 找到老爸留下來的遺產了！
-							totalIn += parentTx.Outputs[in.Index].Amount
+					// [B] 去 Mempool 找未確認的老爸
+					if parentTxBytes, exists := mp.Txs[in.TxID]; exists {
+						if len(parentTxBytes) > 0 {
+							parentTx, _ := blockchain.DeserializeTransaction(parentTxBytes)
+							if parentTx != nil && in.Index < len(parentTx.Outputs) {
+								totalIn += parentTx.Outputs[in.Index].Amount
+							}
 						}
 					}
 				}
 			}
 
-			// 3. 算出這筆交易的真實手續費
 			txFee := totalIn - totalOut
 			if txFee > 0 {
 				packageFee += txFee
 			}
 		}
-		// ==========================================
 
 		pkgs = append(pkgs, TxPackage{
 			Txs: txs,
-			Fee: packageFee, // 👈 現在這個 Fee 絕對是精準的 40 元了！
+			Fee: packageFee,
 		})
 	}
 
