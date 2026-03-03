@@ -212,14 +212,53 @@ func (m *Miner) buildPackages() []TxPackage {
 		visited := make(map[string]bool)
 		txs := m.collectAncestors(txid, visited)
 
-		fee := 0
+		// ==========================================
+		// 🕵️ 大偵探的「透視算帳法」：支援 CPFP (預支薪水)
+		// ==========================================
+		packageFee := 0
 		for _, tx := range txs {
-			fee += tx.Fee(m.Node.GetUTXO())
+			if tx == nil {
+				continue
+			}
+
+			// 1. 計算這筆交易的出帳總額 (TotalOut)
+			totalOut := 0
+			for _, out := range tx.Outputs {
+				totalOut += out.Amount
+			}
+
+			// 2. 計算這筆交易的入帳總額 (TotalIn)
+			totalIn := 0
+			for _, in := range tx.Inputs {
+				utxoKey := fmt.Sprintf("%s_%d", in.TxID, in.Index)
+
+				// [A] 先去已確認的帳本找找看
+				if utxo, ok := m.Node.GetUTXO().Set[utxoKey]; ok {
+					totalIn += utxo.Amount
+				} else {
+					// 🚀 [B] 核心修復：如果帳本找不到，去 Mempool 裡面找未確認的窮老爸！
+					if parentTxBytes, inMempool := m.Node.GetMempool().Txs[in.TxID]; inMempool {
+						// 把窮老爸解壓縮
+						parentTx, err := blockchain.DeserializeTransaction(parentTxBytes)
+						if err == nil && in.Index >= 0 && in.Index < len(parentTx.Outputs) {
+							// 找到老爸留下來的遺產了！
+							totalIn += parentTx.Outputs[in.Index].Amount
+						}
+					}
+				}
+			}
+
+			// 3. 算出這筆交易的真實手續費
+			txFee := totalIn - totalOut
+			if txFee > 0 {
+				packageFee += txFee
+			}
 		}
+		// ==========================================
 
 		pkgs = append(pkgs, TxPackage{
 			Txs: txs,
-			Fee: fee,
+			Fee: packageFee, // 👈 現在這個 Fee 絕對是精準的 40 元了！
 		})
 	}
 
