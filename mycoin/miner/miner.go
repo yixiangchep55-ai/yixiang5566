@@ -89,21 +89,28 @@ func (m *Miner) Mine(includeMempool bool) *blockchain.Block {
 			}
 			// ==========================================
 
-			// 3. 拆開包裹，把交易塞進區塊 (你原本的代碼)
+			if len(txs)+len(pkg.Txs) > MaxTxPerBlock {
+				continue // 裝不下就先跳過這個包裹，等下一個區塊再打包
+			}
+
+			// 2. 確定裝得下！把「整個包裹的手續費」加進礦工口袋 (只加一次！)
+			totalFee += pkg.Fee
+
+			// 3. 拆開包裹，把交易塞進區塊
 			for _, tx := range pkg.Txs {
 				if tx == nil {
 					continue
 				}
 
-				if len(txs) >= MaxTxPerBlock {
-					break
-				}
+				// 已經被別人打包過的就跳過
 				if included[tx.ID] {
 					continue
 				}
+
 				txs = append(txs, *tx)
 				included[tx.ID] = true
-				totalFee += tx.Fee(m.Node.GetUTXO())
+
+				// ❌ 注意：這裡千萬不要再加 totalFee 了！
 			}
 		}
 	}
