@@ -193,7 +193,7 @@ func (n *Node) AddTx(tx blockchain.Transaction) bool {
 	defer n.mu.Unlock()
 	fmt.Println("👉 [X-Ray] 成功鎖定 n.mu，開始執行 VerifyTx...")
 
-	if err := VerifyTx(tx, n.UTXO); err != nil {
+	if err := VerifyTx(tx, n.UTXO, n.Mempool.Txs); err != nil {
 		fmt.Printf("❌ 交易驗證失敗被拒絕 (%s): %v\n", tx.ID, err)
 		return false
 	}

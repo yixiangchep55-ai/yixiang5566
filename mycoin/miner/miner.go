@@ -2,6 +2,7 @@ package miner
 
 import (
 	"bytes"
+	"fmt"
 	"math/big"
 	"mycoin/blockchain"
 	"mycoin/mempool"
@@ -63,12 +64,32 @@ func (m *Miner) Mine(includeMempool bool) *blockchain.Block {
 
 	if includeMempool {
 		pkgs := m.buildPackages()
-		// 按手續費排序
+
+		// 1. 按手續費排序 (你原本就有的代碼)
 		sort.Slice(pkgs, func(i, j int) bool {
 			return pkgs[i].Fee > pkgs[j].Fee
 		})
+
+		// ==========================================
+		// 🕵️ 大偵探新增：設定最低打包門檻 (放迴圈外面)
+		// ==========================================
+		const MinPackageFee = 10
+
+		// 2. 開始遍歷包裹
 		for _, pkg := range pkgs {
 
+			// ==========================================
+			// 🕵️ 大偵探新增：最低打包手續費過濾器！(放外層迴圈的第一行)
+			// 如果這包交易 (包含父+子) 的總利潤太低，礦工拒絕打包！
+			// ==========================================
+			if pkg.Fee < MinPackageFee {
+				// 溫馨提示：如果覺得日誌太吵，這行 Printf 可以註解掉
+				fmt.Printf("⚠️ [Miner] 忽略低手續費包裹 (總手續費僅 %d 元)\n", pkg.Fee)
+				continue // 跳過這個窮酸包裹，直接看下一個！
+			}
+			// ==========================================
+
+			// 3. 拆開包裹，把交易塞進區塊 (你原本的代碼)
 			for _, tx := range pkg.Txs {
 				if tx == nil {
 					continue
