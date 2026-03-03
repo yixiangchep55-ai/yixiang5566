@@ -1,8 +1,10 @@
 package rpcwallet
 
 import (
+	"encoding/hex"
 	"encoding/json"
 	"log"
+	"mycoin/blockchain"
 	"mycoin/network"
 	"mycoin/node"
 	"mycoin/wallet"
@@ -184,6 +186,67 @@ func (s *RPCServer) handleRPC(w http.ResponseWriter, r *http.Request) {
 
 		// 5️⃣ 返回 txid
 		s.writeResult(w, req.ID, tx.ID)
+
+	case "sendcpfpchild":
+		// 🕵️ 大偵探專屬外掛：手動指定要花費的未確認 UTXO！
+		// 參數: <to> <amount> <fee> <parentTxID> <parentIndex>
+		if len(req.Params) != 5 {
+			s.writeError(w, req.ID, "usage: sendcpfpchild <to> <amount> <fee> <parentTxID> <parentIndex>")
+			return
+		}
+
+		toAddr := req.Params[0].(string)
+		amount := int(req.Params[1].(float64))
+		_ = int(req.Params[2].(float64))
+		parentTxID := req.Params[3].(string)
+		parentIndex := int(req.Params[4].(float64))
+
+		// 1️⃣ 手動捏造 Input (使用 blockchain 套件)
+		// 💡 注意：如果你的結構叫 TxInput，請把 TX 改成 Tx
+		in := blockchain.TxInput{
+			TxID:  parentTxID,
+			Index: parentIndex,
+			Sig:   "", // 準備讓錢包簽名
+			// 取得錢包的公鑰並轉成字串 (依照你錢包的寫法微調)
+			PubKey: hex.EncodeToString(s.Wallet.PublicKey),
+		}
+
+		// 2️⃣ 手動捏造 Output
+		out := blockchain.TxOutput{
+			Amount: amount,
+			To:     toAddr,
+		}
+
+		// 3️⃣ 組裝未簽名交易
+		tx := &blockchain.Transaction{
+			ID:         "",
+			Inputs:     []blockchain.TxInput{in},
+			Outputs:    []blockchain.TxOutput{out},
+			IsCoinbase: false,
+		}
+
+		// 產生 TxID (假設你有 Hash 方法，如果沒有，可以用 tx.SetID() 類似的方法)
+		// 如果這行報錯，請換成 tx.ID = hex.EncodeToString(tx.Hash()) 視你的代碼而定
+		tx.ID = tx.Hash()
+
+		// 4️⃣ 簽名交易
+		if err := wallet.SignTransaction(tx, s.Wallet); err != nil {
+			s.writeError(w, req.ID, "sign tx failed: "+err.Error())
+			return
+		}
+
+		// 5️⃣ 塞入 Mempool
+		if ok := s.Node.AddTx(*tx); !ok {
+			s.writeError(w, req.ID, "tx rejected: validation or mempool error")
+			return
+		}
+
+		// 6️⃣ 廣播給全網
+		if s.Handler != nil {
+			s.Handler.BroadcastLocalTx(*tx)
+		}
+
+		s.writeResult(w, req.ID, "CPFP 富兒子發送成功！TxID: "+tx.ID)
 
 	default:
 		s.writeError(w, req.ID, "unknown method")
