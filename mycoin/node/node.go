@@ -188,6 +188,17 @@ func (n *Node) Mine() {
 // 添加交易到 Mempool (最終完全體：支援 RBF)
 // --------------------
 func (n *Node) AddTx(tx blockchain.Transaction) bool {
+	// ==========================================
+	// 🕵️ 第一關：門口保全 (手續費檢查)
+	// ==========================================
+	// 注意：這裡直接從當前 UTXO Set 查手續費
+	fee := tx.Fee(n.UTXO)
+	const MinRelayFee = 5 // 只有手續費 >= 5 元才准進來
+
+	if fee < MinRelayFee {
+		fmt.Printf("🚫 [Security] 交易 %s 手續費太低 (%d < %d)，直接在門外踢掉！\n", tx.ID[:8], fee, MinRelayFee)
+		return false
+	}
 	fmt.Println("👉 [X-Ray] 準備鎖定 n.mu 大門...")
 	n.mu.Lock()
 	defer n.mu.Unlock()
