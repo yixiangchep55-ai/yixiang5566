@@ -67,6 +67,10 @@ func (h *Handler) OnMessage(peer *Peer, msg *Message) {
 
 	case MsgHeaders:
 		h.handleHeaders(peer, msg)
+
+	case "mempool":
+		h.handleMempool(peer, msg)
+
 	default:
 		log.Println("unknown msg:", msg.Type)
 	}
@@ -381,6 +385,7 @@ func (h *Handler) handleBlock(peer *Peer, msg *Message) {
 		} else {
 			// Body 都齊了，結束同步模式
 			h.finishSyncing()
+			h.requestMempool(peer)
 		}
 	}
 
@@ -399,6 +404,46 @@ func (h *Handler) handleBlock(peer *Peer, msg *Message) {
 	if h.Node.SyncState == node.SyncSynced {
 		// 使用 broadcastInvExcept 避免發回給來源節點 (雖然你的 broadcastInv 也行，但 Except 更好)
 		h.broadcastInvExcept(hashHex, peer)
+	}
+}
+
+// ======================
+// Mempool 同步機制
+// ======================
+
+// 1. 發送 Mempool 請求
+func (h *Handler) requestMempool(peer *Peer) {
+	fmt.Printf("📢 [P2P] 向 %s 發送 MsgMempool 請求，索取未確認交易...\n", peer.Addr)
+	peer.Send(Message{
+		Type: "mempool", // 定義一個新的指令字串
+		Data: nil,       // 只需要一個信號，不需要 Payload
+	})
+}
+
+// 2. 處理收到的 Mempool 請求
+func (h *Handler) handleMempool(peer *Peer, msg *Message) {
+	fmt.Printf("📥 [P2P] 收到來自 %s 的 Mempool 請求\n", peer.Addr)
+
+	var txIDs []string
+
+	// 透過你原本就有的 GetAll() 函數取得所有交易
+	for txid := range h.Node.Mempool.GetAll() {
+		txIDs = append(txIDs, txid)
+	}
+
+	if len(txIDs) > 0 {
+		fmt.Printf("📤 [P2P] 發現 %d 筆未確認交易，正在打包 Inv 發送給 %s...\n", len(txIDs), peer.Addr)
+
+		// 呼叫你原本就寫好的 MsgInv 格式，告訴對方我們有哪些交易
+		peer.Send(Message{
+			Type: MsgInv,
+			Data: InvPayload{
+				Type:   "tx",
+				Hashes: txIDs,
+			},
+		})
+	} else {
+		fmt.Printf("🤷 [P2P] 我的 Mempool 是空的，無交易可提供給 %s。\n", peer.Addr)
 	}
 }
 
@@ -727,6 +772,7 @@ func (h *Handler) handleHeaders(peer *Peer, msg *Message) {
 			if !h.Node.HasMissingBodies() {
 				fmt.Println("✨ 偵測到雙方高度一致且無缺塊，主動切換至『已同步』狀態...")
 				h.finishSyncing() // 👈 這行是讓礦工開工的關鍵鑰匙！
+				h.requestMempool(peer)
 			} else {
 				// 如果雖然對方沒新 Header，但我們自己還有舊的 Body 沒抓完
 				h.requestMissingBlockBodies(peer)

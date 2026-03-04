@@ -14,6 +14,10 @@ type Network struct {
 	PeerManager *PeerManager
 }
 
+type mempool struct {
+	AddrFrom string
+}
+
 func NewNetwork(handler *Handler) *Network {
 	return &Network{
 		Peers:   make(map[string]*Peer),
