@@ -8,6 +8,7 @@ import (
 	"math/big"
 	"mycoin/blockchain"
 	"mycoin/database"
+	indexer "mycoin/inxeder"
 	"mycoin/mempool"
 	"mycoin/miner"
 	"mycoin/utils"
@@ -315,6 +316,8 @@ func (n *Node) AddBlock(block *blockchain.Block) bool {
 
 	// 處理孤兒塊：這會啟動遞迴，因為鎖已放開，不會發生死鎖
 	go n.attachOrphans(hashHex)
+
+	go indexer.IndexBlock(block, block.Height)
 
 	return true
 }

@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"time" // 引入 time 包
 
+	indexer "mycoin/inxeder"
 	"mycoin/miner"
 	"mycoin/network"
 	"mycoin/node"
@@ -53,6 +54,11 @@ func main() {
 	os.MkdirAll(*datadir, 0755)
 	// dbPath := filepath.Join(*datadir, "chain.db") // unused variable
 	fmt.Println("📁 Using datadir:", *datadir)
+
+	// ==========================================
+	// 🚀 0. 初始化 PostgreSQL Indexer 資料庫
+	// ==========================================
+	indexer.InitDB()
 
 	// -------------------------------
 	// 1. 创建 Node
