@@ -133,74 +133,51 @@ func (n *Node) connectBlock(block *blockchain.Block, parent *BlockIndex) bool {
 	// ----------------------------------------------------
 	chainSwitched := false
 
-	// 情況 A: 正常延伸主鏈 (Extend)
 	if parent == n.Best {
 		n.Best = bi
-
-		// 1. 更新內存 Chain 視圖
 		n.Chain = append(n.Chain, block)
-
-		// 2. 更新 UTXO (增量更新)
-		n.updateUTXO(block)
+		n.updateUTXO(block) // 增量更新帳本
 
 		log.Printf("⛏️ Main chain extended to height: %d (Hash: %s)\n", bi.Height, hashHex)
 		chainSwitched = true
 
-		// 剪枝邏輯 (可選)
-		// if n.Mode == "pruned" ...
-
 	} else if bi.CumWorkInt.Cmp(n.Best.CumWorkInt) > 0 {
-		// 情況 B: 觸發重組 (Reorg) - 工作量 > 當前主鏈
 		log.Printf("🔁 REORG DETECTED! Current Best: %d, New Best: %d\n", n.Best.Height, bi.Height)
 
-		// 1. 計算路徑 (需下方的輔助函數)
 		oldChain, newChain := n.reorgTo(bi)
-
-		// 2. 執行重組
-		// (這行保留，讓它去更新 n.Chain 和區塊鏈視圖)
 		n.rebuildChain(oldChain, newChain, bi)
 
-		// ==========================================
-		// 🚀 關鍵新增：核彈級防護！
-		// 因為 rebuildChain 裡面的「退回交易」邏輯有瑕疵，
-		// 我們直接在這裡強制撕掉整張草稿紙，根據最新接好的主鏈從零重算餘額！
-		// ==========================================
+		// 🏆 Kali 救星：在切換主鏈後，徹底重新掃描帳本
 		fmt.Println("🔄 執行核彈級動態鏈重組 (Full UTXO Rebuild)...")
 		n.RebuildUTXO()
-		// ==========================================
 
 		chainSwitched = true
-	} else {
-		// 情況 C: 側鏈 (Side Chain)
-		// log.Printf("ℹ️ 收到側鏈區塊 高度 %d (未切換)\n", bi.Height)
 	}
 
-	// 只有當主鏈變更時，才更新 meta 中的 best
 	if chainSwitched {
+		// 1. 持久化最新鏈頭 (Tip)
 		n.DB.Put("meta", "best", []byte(n.Best.Hash))
 
-		// ==========================================
-		// 🧹 🕵️ 大偵探新增：清理 Mempool！
-		// 把這個新上鏈區塊裡面的交易，從記憶體池刪除
-		// ==========================================
+		// 2. 🚀 強制同步：確保 Kali 這種快速同步的節點，硬碟裡的帳本與記憶體完全一致
+		n.UTXO.FlushToDB()
+
+		// 3. 🧹 清理 Mempool
+		txCount := 0
 		for _, tx := range block.Transactions {
-			if !tx.IsCoinbase { // 👈 拔掉括號！直接讀取變數屬性
-				n.Mempool.Remove(tx.ID) // (請確認你的 Mempool 刪除函數叫 Remove)
+			if !tx.IsCoinbase {
+				n.Mempool.Remove(tx.ID) // 👈 請確認函數名
+				txCount++
 			}
 		}
-		fmt.Printf("🧹 [Mempool] 已清理區塊 %d 中的 %d 筆交易\n", block.Height, len(block.Transactions)-1)
-		// ==========================================
-		// ==========================================
-		// 🚀 關鍵新增：絕對不會漏接的終極重置信號！
-		// 只要確認主鏈真的更新了，就立刻敲響警鐘叫礦工重算！
-		// ==========================================
+		fmt.Printf("🧹 [Mempool] 已清理區塊 %d 中的 %d 筆交易\n", block.Height, txCount)
+
+		// 4. 🚀 發送中斷信號給礦工 (若當前正在挖礦)
 		select {
 		case n.MinerResetChan <- true:
-			fmt.Println("⚡ [Consensus] 鏈頭已更新，成功發送中斷信號給礦工！")
+			fmt.Println("⚡ [Consensus] 鏈頭更新，已通知礦工重新計算")
 		default:
-			// 信箱滿了代表礦工已經準備重置了，安全跳過
+			// 頻道已滿，代表信號已在處理中，安全跳過
 		}
-		// ==========================================
 	}
 	// ----------------------------------------------------
 	// 6️⃣ 處理孤塊

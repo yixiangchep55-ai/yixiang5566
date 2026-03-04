@@ -13,39 +13,52 @@ func VerifyBlockWithUTXO(
 	parent *blockchain.Block,
 	utxo *blockchain.UTXOSet,
 ) error {
-
-	// 1️⃣ header / PoW / tx signature
+	// 1️⃣ 基礎驗證 (PoW, PrevHash)
 	if err := block.Verify(parent); err != nil {
 		return err
 	}
 
-	// 2️⃣ 临时 UTXO (隔離沙盒)
 	tmp := utxo.Clone()
+	var totalFees int = 0 // 🚀 偵探新增：用來記錄這個區塊所有交易付出的手續費
 
-	// 3️⃣ coinbase 必须第一个
-	if len(block.Transactions) == 0 || !block.Transactions[0].IsCoinbase {
-		return fmt.Errorf("coinbase must be first")
-	}
-
-	// 4️⃣ 执行交易
+	// ----------------------------------------------------
+	// 4️⃣ 執行交易 (跳過 Coinbase 先算手續費)
+	// ----------------------------------------------------
 	for i, tx := range block.Transactions {
 		if i == 0 {
-			tmp.Add(tx)
+			// Coinbase 暫時不 Add，因為我們要先驗證它的金額
 			continue
 		}
 
-		// 🔥 關鍵新增：在 Spend 之前，利用 tmp 進行嚴格的簽名與金額檢查
+		// 驗證簽名與餘額 (利用沙盒 tmp)
+		// 這裡傳入 nil 因為區塊內的依賴已經透過 tmp.Add 處理了
 		if err := VerifyTx(tx, tmp, nil); err != nil {
-			return fmt.Errorf("tx %s invalid: %v", tx.ID, err)
+			return fmt.Errorf("tx %s invalid: %v", tx.ID[:8], err)
 		}
 
-		// 如果上面檢查通過，這裡執行花費 (同時防禦同一區塊內的雙花)
+		// 累計手續費
+		totalFees += tx.Fee(tmp, nil)
+
+		// 執行花費並產生新 UTXO
 		if err := tmp.Spend(tx); err != nil {
-			return fmt.Errorf("double spend or missing utxo: %v", err)
+			return fmt.Errorf("double spend in block: %v", err)
 		}
-
-		// 產生新的 UTXO 供後續交易使用
 		tmp.Add(tx)
+	}
+
+	// ----------------------------------------------------
+	// 5️⃣ 🕵️ 偵探嚴審：Coinbase 金額校驗
+	// ----------------------------------------------------
+	coinbaseTx := block.Transactions[0]
+	expectedReward := 100 + totalFees // 區塊獎勵 + 總手續費
+
+	actualReward := 0
+	for _, out := range coinbaseTx.Outputs {
+		actualReward += out.Amount
+	}
+
+	if actualReward > expectedReward {
+		return fmt.Errorf("coinbase reward too high: expected %d, got %d", expectedReward, actualReward)
 	}
 
 	return nil

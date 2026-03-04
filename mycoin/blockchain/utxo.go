@@ -4,6 +4,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+
 	"mycoin/database"
 )
 
@@ -90,7 +91,9 @@ func (u *UTXOSet) Add(tx Transaction) {
 	}
 }
 func (u *UTXOSet) Clone() *UTXOSet {
-	nu := NewUTXOSet(u.DB)
+	// 🚀 關鍵：傳入 nil，確保沙盒不會誤寫硬碟
+	nu := NewUTXOSet(nil)
+
 	for k, v := range u.Set {
 		nu.Set[k] = v
 	}
@@ -201,4 +204,129 @@ func (u *UTXOSet) FindSpendableOutputs(pubKey string, amount int) (int, map[stri
 	}
 
 	return accumulated, unspentOutputs
+}
+
+func (u *UTXOSet) Revert(tx Transaction) {
+	// 1. 刪除該交易產生的所有 Output (原本 Add 進去的現在要拿掉)
+	for i, out := range tx.Outputs {
+		key := fmt.Sprintf("%s_%d", tx.ID, i)
+
+		// 從記憶體 Map 刪除
+		delete(u.Set, key)
+
+		// 從地址索引 AddrIndex 刪除 (同步清理，避免餘額虛高)
+		addr := out.To
+		keys := u.AddrIndex[addr]
+		for j, k := range keys {
+			if k == key {
+				u.AddrIndex[addr] = append(keys[:j], keys[j+1:]...)
+				break
+			}
+		}
+
+		// 從硬碟 BoltDB 刪除
+		if u.DB != nil {
+			u.DB.Delete("utxo", key)
+		}
+	}
+
+	// 2. 恢復該交易花掉的 Input (原本 Spend 掉的錢，現在要倒退還給主人)
+	// 注意：Coinbase 交易沒有 Input，直接跳過
+	if !tx.IsCoinbase {
+		for _, in := range tx.Inputs {
+			// 🚀 關鍵：去資料庫裡找回老爸交易的原始數據
+			parentTx := u.lookupTransaction(in.TxID)
+			if parentTx != nil {
+				prevOut := parentTx.Outputs[in.Index]
+				utxo := UTXO{
+					TxID:   in.TxID,
+					Index:  in.Index,
+					Amount: prevOut.Amount,
+					To:     prevOut.To,
+				}
+				key := fmt.Sprintf("%s_%d", in.TxID, in.Index)
+
+				// 恢復到記憶體 Map
+				u.Set[key] = utxo
+
+				// 恢復到地址索引 AddrIndex (並做防重複檢查)
+				exists := false
+				for _, existingKey := range u.AddrIndex[prevOut.To] {
+					if existingKey == key {
+						exists = true
+						break
+					}
+				}
+				if !exists {
+					u.AddrIndex[prevOut.To] = append(u.AddrIndex[prevOut.To], key)
+				}
+
+				// 恢復到硬碟 BoltDB
+				if u.DB != nil {
+					utxoBytes, _ := json.Marshal(utxo)
+					u.DB.Put("utxo", key, utxoBytes)
+				}
+			}
+		}
+	}
+}
+
+// lookupTransaction 輔助函數：直接從資料庫找回舊交易資料
+func (u *UTXOSet) lookupTransaction(txid string) *Transaction {
+	if u.DB == nil {
+		return nil
+	}
+
+	// 1. 從 txindex bucket 查找交易所在的索引
+	data := u.DB.Get("txindex", txid)
+	if data == nil {
+		return nil
+	}
+
+	var idx TxIndexEntry
+	if err := json.Unmarshal(data, &idx); err != nil {
+		return nil
+	}
+
+	// 2. 根據索引提供的 BlockHash 讀取完整的區塊體
+	blockBytes := u.DB.Get("blocks", idx.BlockHash)
+	if blockBytes == nil {
+		return nil
+	}
+
+	// 3. 反序列化區塊並提取指定位置的交易
+	block, err := DeserializeBlock(blockBytes)
+	if err != nil {
+		return nil
+	}
+
+	if idx.TxOffset < 0 || idx.TxOffset >= len(block.Transactions) {
+		return nil
+	}
+
+	return &block.Transactions[idx.TxOffset]
+}
+
+// FlushToDB 將記憶體中所有的 UTXO 狀態強行刷新到資料庫
+func (u *UTXOSet) FlushToDB() {
+	if u.DB == nil {
+		return
+	}
+
+	// 1. 先清空資料庫中的舊帳本，防止殘留舊的分塊資料
+	err := u.DB.ClearBucket("utxo")
+	if err != nil {
+		fmt.Printf("⚠️ [UTXO] 無法清空舊帳本: %v\n", err)
+	}
+
+	// 2. 將記憶體中目前的 Set 逐一寫入
+	count := 0
+	for key, utxo := range u.Set {
+		utxoBytes, err := json.Marshal(utxo)
+		if err == nil {
+			u.DB.Put("utxo", key, utxoBytes)
+			count++
+		}
+	}
+	fmt.Printf("💾 [UTXO] 已成功將 %d 筆帳目刷新至硬碟資料庫\n", count)
 }

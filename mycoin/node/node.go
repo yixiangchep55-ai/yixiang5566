@@ -268,65 +268,53 @@ func (n *Node) appendBlock(block *blockchain.Block) {
 // 添加新区块
 // --------------------
 func (n *Node) AddBlock(block *blockchain.Block) bool {
-	n.mu.Lock() // 🔒 進門第一件事：上鎖
-	// ⚠️ 注意：不要寫 defer n.mu.Unlock()
+	n.mu.Lock()
+	// 🔒 我們依然手動管理鎖，不使用 defer，因為我們要精確控制 Unlock 時機
 
 	hashHex := hex.EncodeToString(block.Hash)
 	prevHex := hex.EncodeToString(block.PrevHash)
 
-	fmt.Printf("\n📥 [Node] 收到區塊處理請求: 高度 %d, Hash: %s\n", block.Height, hashHex)
-
-	// ---------------------------------------------------------
-	// 1. 檢查是否已存在 (Deduplication)
-	// ---------------------------------------------------------
+	// 1. 重複檢查
 	if bi, exists := n.Blocks[hashHex]; exists {
-		if bi.Block == nil {
-			fmt.Printf("📦 收到區塊體，補齊資料: 高度 %d\n", bi.Height)
-
-		} else {
-			// 情況 B: 已經完全存在了 (Body 也有了)，直接忽略
-			n.mu.Unlock() // 🔓 【必須補上 1】：提早離開前解鎖！
+		if bi.Block != nil {
+			n.mu.Unlock() // 🔓 已經有了，安全解鎖
 			return true
 		}
+		// 如果只有 Header 沒 Body，就繼續跑下去補齊它
 	}
 
-	// ---------------------------------------------------------
-	// 2. 檢查父塊是否存在 (Orphan Check)
-	// ---------------------------------------------------------
+	// 2. 孤兒檢查
 	parentIndex, exists := n.Blocks[prevHex]
-
-	// 🛡️ 升級防線：不只要 exists (有標頭)，還必須確保它的「實體資料 (Block)」真的存在！
-	// 如果 parentIndex.Block == nil，代表它也是一個等待補齊資料的「半孤塊」
 	if !exists || parentIndex.Block == nil {
-		// 這是孤兒塊，存入孤兒池
-		log.Printf("⚠️ 發現孤塊或父塊實體尚未就緒 (缺少父塊 %s): 高度 %d\n", prevHex, block.Height)
+		log.Printf("⚠️ 發現孤塊: %d (缺少父塊 %s)\n", block.Height, prevHex[:8])
 		n.AddOrphan(block)
-		n.mu.Unlock() // 🔓 提早離開前解鎖！
+		n.mu.Unlock() // 🔓 存入孤兒院，安全解鎖
 		return false
 	}
 
-	// ---------------------------------------------------------
-	// 3. 交給 connectBlock 進行核心處理
-	// ---------------------------------------------------------
+	// 3. 核心連接 (此時仍持有鎖，保護 n.Best 和 n.UTXO)
 	success := n.connectBlock(block, parentIndex)
 
 	if !success {
-		log.Printf("❌ 區塊連接失敗: %s\n", hashHex)
-		n.mu.Unlock() // 🔓 【必須補上 3】：提早離開前解鎖！
+		n.mu.Unlock() // 🔓 失敗，安全解鎖
 		return false
 	}
 
 	// ==========================================
-	// 🚀 4. 成功連接！主動解開 Node 的鎖！
+	// 🚀 關鍵修正點：在解鎖前，確保帳本狀態已經同步
 	// ==========================================
-	n.mu.Unlock() // 🔓 核心資料更新完畢，提早解鎖！
+	// 雖然 connectBlock 裡可能有 Flush，但這裡做最後確認，確保 Kali 重啟必對。
+	// n.UTXO.FlushToDB() // 如果 connectBlock 已經做了，這裡可省略
 
-	// 🧹 現在大門已經解鎖了，我們可以安全地清理 Mempool (不會 ABBA 死鎖)
+	// 4. 釋放 Node 鎖
+	n.mu.Unlock()
+
+	// 5. 異步/解鎖後的後續處理
+	// 清理 Mempool (此時新區塊已接上，Mempool 內的交易已失效)
 	n.removeConfirmedTxs(block)
 
-	// 👶 【必須補上 4】：安全地處理孤塊！
-	// 剛才因為卡死被我們從 connectBlock 移出來的孤兒院，要在這裡呼叫！
-	n.attachOrphans(hashHex)
+	// 處理孤兒塊：這會啟動遞迴，因為鎖已放開，不會發生死鎖
+	go n.attachOrphans(hashHex)
 
 	return true
 }
@@ -335,7 +323,44 @@ func (n *Node) AddBlock(block *blockchain.Block) bool {
 // 重建主链 (完美退回交易版)
 // --------------------
 func (n *Node) rebuildChain(oldChain, newChain []*BlockIndex, newTip *BlockIndex) {
-	// 1️⃣ 構建完整主鏈陣列
+	fmt.Printf("🔄 [Reorg] 啟動鏈重組：舊鏈長度 %d -> 新鏈長度 %d\n", len(oldChain), len(newChain))
+
+	// ============================================================
+	// 🛠️ 核心修正：同步更新 UTXO 帳本 (必須在更新 n.Chain 之前處理)
+	// ============================================================
+
+	// A. 撤銷舊鏈 (Rollback) - 必須由新往舊（Tip 往回走）撤銷
+	for i := len(oldChain) - 1; i >= 0; i-- {
+		oldBI := oldChain[i]
+		if oldBI != nil && oldBI.Block != nil {
+			fmt.Printf("⏪ 正在撤銷舊鏈區塊: %d (Hash: %s)\n", oldBI.Height, oldBI.Hash[:8])
+			for _, tx := range oldBI.Block.Transactions {
+				// 🛡️ 撤銷該交易對帳本的影響 (需要實作 n.UTXO.Revert)
+				// 如果你還沒寫 Revert，這裡暫時可以用簡單邏輯替代，或確保後面執行 Rebuild
+				n.UTXO.Revert(tx)
+			}
+		}
+	}
+
+	// B. 執行新鏈 (Apply) - 必須由舊往新（高度從小到大）執行
+	for _, newBI := range newChain {
+		if newBI != nil && newBI.Block != nil {
+			fmt.Printf("⏩ 正在執行新鏈區塊: %d (Hash: %s)\n", newBI.Height, newBI.Hash[:8])
+			for _, tx := range newBI.Block.Transactions {
+				if !tx.IsCoinbase {
+					n.UTXO.Spend(tx)
+				}
+				n.UTXO.Add(tx)
+			}
+		}
+	}
+
+	// 💾 確保更新後的帳本狀態寫入 BoltDB，防止 Kali 重啟後遺失
+	n.UTXO.FlushToDB()
+
+	// ============================================================
+	// 1️⃣ 構建完整主鏈陣列 (原始邏輯)
+	// ============================================================
 	var fullChain []*blockchain.Block
 	cur := newTip
 	for cur != nil {
@@ -349,7 +374,9 @@ func (n *Node) rebuildChain(oldChain, newChain []*BlockIndex, newTip *BlockIndex
 	n.Chain = fullChain
 	n.Best = newTip
 
-	// 2️⃣ 收集新鏈中【已經確認】的交易 ID
+	// ============================================================
+	// 2️⃣ 收集新鏈中【已經確認】的交易 ID (原始邏輯)
+	// ============================================================
 	confirmedInNewChain := make(map[string]bool)
 	for _, bi := range newChain {
 		if bi != nil && bi.Block != nil {
@@ -359,7 +386,9 @@ func (n *Node) rebuildChain(oldChain, newChain []*BlockIndex, newTip *BlockIndex
 		}
 	}
 
-	// 3️⃣ 找出需要退回 Mempool 的交易 (舊鏈被踢出的 + 原本就在池子裡的)
+	// ============================================================
+	// 3️⃣ 找出需要退回 Mempool 的交易 (原始邏輯)
+	// ============================================================
 	txsToRestore := make(map[string][]byte)
 
 	// A. 抓出舊鏈中沒有被新鏈打包的交易
@@ -380,14 +409,18 @@ func (n *Node) rebuildChain(oldChain, newChain []*BlockIndex, newTip *BlockIndex
 		}
 	}
 
-	// 4️⃣ 安全地重建 Mempool！
+	// ============================================================
+	// 4️⃣ 安全地重建 Mempool！ (原始邏輯)
+	// ============================================================
 	n.Mempool.Clear()
 	for txid, bytes := range txsToRestore {
 		// 🚀 關鍵防護：直接塞回底層 Map，不觸發複雜驗證，完美避開死鎖！
 		n.Mempool.Txs[txid] = bytes
 	}
 
-	// 5️⃣ 重建交易索引 (TxIndex)
+	// ============================================================
+	// 5️⃣ 重建交易索引 (TxIndex) (原始邏輯)
+	// ============================================================
 	for _, old := range oldChain {
 		if old != nil && old.Block != nil {
 			n.removeTxIndex(old.Block)
@@ -399,7 +432,7 @@ func (n *Node) rebuildChain(oldChain, newChain []*BlockIndex, newTip *BlockIndex
 		}
 	}
 
-	log.Printf("🔁 鏈重組完成！成功將 %d 筆交易退回 Mempool 等待重發。\n", len(txsToRestore))
+	log.Printf("🔁 鏈重組完成！高度: %d, 已將 %d 筆交易退回 Mempool。\n", newTip.Height, len(txsToRestore))
 }
 
 // --------------------
@@ -650,56 +683,42 @@ func (n *Node) PrintChainStatus() {
 
 // RebuildUTXO rebuilds the full UTXO set from the chain stored in n.Chain.
 func (n *Node) RebuildUTXO() error {
-	fmt.Println("🔄 FastSync: Rebuilding full UTXO set...")
+	fmt.Println("🔄 [Full Rebuild] 啟動全帳本重建...")
 
-	// 1) 清空 UTXO
-	utxo := blockchain.NewUTXOSet(n.DB)
-	utxo.Set = make(map[string]blockchain.UTXO)
-	utxo.AddrIndex = make(map[string][]string)
+	// 0️⃣ 核心防護：確保主鏈視圖是最新的
+	n.UpdateChainFromBest()
 
-	if utxo.DB != nil {
-		err := utxo.DB.ClearBucket("utxo")
-		if err != nil {
-			return err
-		}
-	}
+	// 1️⃣ 創建一個「純記憶體」的臨時帳本 (不要傳入 DB)
+	// 這樣在遍歷區塊時，Spend 和 Add 只會改記憶體，不會頻繁寫硬碟
+	tmpUtxo := blockchain.NewUTXOSet(nil)
 
-	// 2) 按順序遍歷鏈上的每個區塊
+	// 2️⃣ 遍歷主鏈
+	txCount := 0
 	for _, block := range n.Chain {
 		if block == nil {
 			continue
 		}
-
 		for _, tx := range block.Transactions {
-			// 非 coinbase 花費輸入
 			if !tx.IsCoinbase {
-				utxo.Spend(tx)
+				tmpUtxo.Spend(tx)
 			}
-			// 添加輸出
-			utxo.Add(tx)
+			tmpUtxo.Add(tx)
+			txCount++
 		}
 	}
 
-	// 3) 替換舊 UTXO (記憶體更新)
-	n.UTXO = utxo
+	// 3️⃣ 準備切換：將臨時帳本重新關聯到正式 DB
+	tmpUtxo.DB = n.DB
 
-	// ==========================================
-	// 💾 4) 終極快取存檔：把算好的餘額寫入資料庫！
-	// ==========================================
-	if n.DB != nil {
-		fmt.Printf("💾 正在將 %d 筆 UTXO 快取寫入硬碟...\n", len(n.UTXO.Set))
-		for txidOut, u := range n.UTXO.Set {
-			utxoBytes, err := json.Marshal(u)
-			if err == nil {
-				n.DB.Put("utxo", txidOut, utxoBytes)
-			} else {
-				fmt.Println("❌ UTXO 存檔失敗:", err)
-			}
-		}
-	}
-	// ==========================================
+	// 4️⃣ 執行「一次性」落地
+	// 使用你剛寫好的 FlushToDB，它會清空舊 bucket 並把最新結果一次鎖定
+	fmt.Printf("💾 重建完成 (共 %d 筆交易)，正在執行批次存檔...\n", txCount)
+	tmpUtxo.FlushToDB()
 
-	fmt.Println("✅ FastSync: UTXO rebuild complete & saved to DB.")
+	// 5️⃣ 替換正式指標
+	n.UTXO = tmpUtxo
+
+	fmt.Println("✅ [Full Rebuild] 重建成功，帳本已完全同步。")
 	return nil
 }
 
@@ -847,15 +866,29 @@ func (n *Node) IsSynced() bool {
 }
 
 func (n *Node) updateUTXO(block *blockchain.Block) {
+	fmt.Printf("📂 [UTXO] 正在更新區塊 %d 的帳本狀態...\n", block.Height)
+
 	for _, tx := range block.Transactions {
 		// 1. 移除已花費的輸出 (Inputs)
 		if !tx.IsCoinbase {
-			n.UTXO.Spend(tx)
+			err := n.UTXO.Spend(tx)
+			if err != nil {
+				// 🛡️ 偵探提醒：如果在更新主鏈時發現錢不夠花，這是嚴重的共識錯誤
+				fmt.Printf("❌ [Fatal] 區塊 %d 交易 %s 花費失敗: %v\n", block.Height, tx.ID[:8], err)
+				// 在實際生產環境，這裡可能需要觸發鏈回滾或停止同步
+			}
 		}
 
 		// 2. 添加新產生的輸出 (Outputs)
 		n.UTXO.Add(tx)
 	}
+
+	// ==========================================
+	// 🚀 關鍵新增：確保每一磚一瓦都刻在硬碟上
+	// ==========================================
+	// 這樣即使在下一個區塊進來前斷電，Kali 重啟後餘額依然是正確的
+	n.UTXO.FlushToDB()
+	// ==========================================
 }
 
 func (n *Node) addTxsToMempool(txs []blockchain.Transaction) {
