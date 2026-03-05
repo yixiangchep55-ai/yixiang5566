@@ -317,7 +317,8 @@ func (n *Node) AddBlock(block *blockchain.Block) bool {
 	// 處理孤兒塊：這會啟動遞迴，因為鎖已放開，不會發生死鎖
 	go n.attachOrphans(hashHex)
 
-	go indexer.IndexBlock(block, block.Height)
+	isMain := n.IsOnMainChain(n.Blocks[hashHex])
+	go indexer.IndexBlock(block, block.Height, isMain)
 
 	return true
 }
@@ -338,10 +339,10 @@ func (n *Node) rebuildChain(oldChain, newChain []*BlockIndex, newTip *BlockIndex
 		if oldBI != nil && oldBI.Block != nil {
 			fmt.Printf("⏪ 正在撤銷舊鏈區塊: %d (Hash: %s)\n", oldBI.Height, oldBI.Hash[:8])
 			for _, tx := range oldBI.Block.Transactions {
-				// 🛡️ 撤銷該交易對帳本的影響 (需要實作 n.UTXO.Revert)
-				// 如果你還沒寫 Revert，這裡暫時可以用簡單邏輯替代，或確保後面執行 Rebuild
 				n.UTXO.Revert(tx)
 			}
+			// 🚀 【手術刀 1】：同步抹除 PostgreSQL 裡的幽靈數據
+			indexer.UnindexBlock(oldBI.Hash)
 		}
 	}
 
@@ -355,6 +356,8 @@ func (n *Node) rebuildChain(oldChain, newChain []*BlockIndex, newTip *BlockIndex
 				}
 				n.UTXO.Add(tx)
 			}
+			// 🚀 【手術刀 2】：把新鏈的資料重新寫入 PostgreSQL，確保它是最新狀態
+			indexer.IndexBlock(newBI.Block, newBI.Height, true)
 		}
 	}
 
