@@ -58,6 +58,23 @@ func (s *RPCServer) handleRPC(w http.ResponseWriter, r *http.Request) {
 
 	switch req.Method {
 
+	case "estimatefee":
+		// 🕵️ 大偵探的手續費預測雷達
+		baseFee := 1
+		mempoolSize := 0
+
+		// 這裡的 s.Node 是實體 struct，可以直接讀取 Mempool
+		if s.Node != nil && s.Node.Mempool != nil {
+			mempoolSize = len(s.Node.Mempool.Txs)
+		}
+
+		// 套用跟礦工一模一樣的「擁堵漲價公式」
+		congestionPremium := (mempoolSize / 5) * 2
+		recommendedFee := baseFee + congestionPremium
+
+		// 回報給前台
+		s.writeResult(w, req.ID, float64(recommendedFee)/100.0)
+
 	case "getbalance":
 		if len(req.Params) != 1 {
 			s.writeError(w, req.ID, "address required")
@@ -84,7 +101,7 @@ func (s *RPCServer) handleRPC(w http.ResponseWriter, r *http.Request) {
 			total += utxo.Amount
 		}
 
-		s.writeResult(w, req.ID, total)
+		s.writeResult(w, req.ID, float64(total)/100.0)
 
 	case "listutxos":
 		if len(req.Params) != 1 {
@@ -138,17 +155,27 @@ func (s *RPCServer) handleRPC(w http.ResponseWriter, r *http.Request) {
 			s.writeError(w, req.ID, "invalid amount")
 			return
 		}
-		amount := int(amountFloat)
+		amount := int(amountFloat * 100)
 
 		fee := 0
 		if len(req.Params) >= 3 {
 			feeFloat, ok := req.Params[2].(float64)
 			if ok {
-				fee = int(feeFloat)
+				fee = int(feeFloat * 100)
 			}
 		}
 
 		s.Node.Lock()
+
+		var currentMempoolTxs []blockchain.Transaction
+		for _, txBytes := range s.Node.Mempool.Txs {
+			var tx blockchain.Transaction
+			// 這裡假設你有一個 Deserialize 方法，或者直接用 json.Unmarshal
+			// 如果你的 Transaction 支援 Gob 或 Json，請根據你的專案微調：
+			if err := json.Unmarshal(txBytes, &tx); err == nil {
+				currentMempoolTxs = append(currentMempoolTxs, tx)
+			}
+		}
 
 		// 1️⃣ 构造未签名交易
 		tx, err := wallet.BuildTransaction(
@@ -157,6 +184,7 @@ func (s *RPCServer) handleRPC(w http.ResponseWriter, r *http.Request) {
 			amount,
 			fee,
 			s.Node.UTXO,
+			currentMempoolTxs,
 		)
 
 		s.Node.Unlock() // 🔓 呼叫公開的 Unlock()

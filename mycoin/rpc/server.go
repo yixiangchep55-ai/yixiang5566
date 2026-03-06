@@ -8,29 +8,7 @@ import (
 	"net/http"
 
 	"mycoin/network"
-	"mycoin/node"
-	"mycoin/wallet"
 )
-
-// JSON-RPC 标准结构
-type RPCRequest struct {
-	Method string        `json:"method"`
-	Params []interface{} `json:"params"`
-	ID     interface{}   `json:"id"`
-}
-
-type RPCResponse struct {
-	Result interface{} `json:"result,omitempty"`
-	Error  interface{} `json:"error,omitempty"`
-	ID     interface{} `json:"id,omitempty"`
-}
-
-// RPC 服务器本体
-type RPCServer struct {
-	Node    *node.Node
-	Handler *network.Handler
-	Wallet  *wallet.Wallet
-}
 
 // 启动 RPC 服务
 func (s *RPCServer) Start(addr string) {
@@ -118,7 +96,7 @@ func (s *RPCServer) handleRPC(w http.ResponseWriter, r *http.Request) {
 
 		b := bi.Block
 
-		// 2️⃣ 构造 RPC Block
+		// 2️⃣ 構造 RPC Block (建議增加 Reward 欄位)
 		rpcBlock := RPCBlock{
 			Hash:      hex.EncodeToString(b.Hash),
 			PrevHash:  hex.EncodeToString(b.PrevHash),
@@ -127,28 +105,27 @@ func (s *RPCServer) handleRPC(w http.ResponseWriter, r *http.Request) {
 			Nonce:     b.Nonce,
 			Target:    b.Target.Text(16),
 			CumWork:   bi.CumWorkInt.Text(16),
+			Reward:    float64(b.Reward) / 100.0, // 🚀 修正：500 -> 5.00
 		}
 
 		// 3️⃣ 填充交易
 		for _, tx := range b.Transactions {
 			rpcTx := RPCTx{
-				TxID: tx.ID,
+				TxID: tx.ID, // 確保這裡是 hex 字串
 			}
 
 			for _, in := range tx.Inputs {
-
 				fromAddr := ""
-
-				// ⭐ Coinbase 交易的特殊处理
 				if in.TxID == "" {
 					fromAddr = "coinbase"
 				} else {
-					// ⭐ 普通交易：从 UTXO Set 查来源地址
+					// 🕵️ 探長提醒：這裡如果 UTXO 沒了，會變 unknown。
+					// 暫時維持現狀，但 UI 上要有心裡準備
 					key := fmt.Sprintf("%s_%d", in.TxID, in.Index)
 					if utxo, ok := s.Node.UTXO.Set[key]; ok {
 						fromAddr = utxo.To
 					} else {
-						fromAddr = "unknown"
+						fromAddr = "spent / unknown"
 					}
 				}
 
@@ -161,7 +138,8 @@ func (s *RPCServer) handleRPC(w http.ResponseWriter, r *http.Request) {
 
 			for _, out := range tx.Outputs {
 				rpcTx.Outputs = append(rpcTx.Outputs, RPCTxOutput{
-					Amount: out.Amount,
+					// 🚀 關鍵修正：將底層整數轉換為小數顯示
+					Amount: float64(out.Amount) / 100.0,
 					To:     out.To,
 				})
 			}
@@ -269,12 +247,35 @@ func (s *RPCServer) handleRPC(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 
-		// ⭐ 使用到了 block（不会 unused）
+		var displayOutputs []TxOutputJSON
+		for _, out := range tx.Outputs {
+			displayOutputs = append(displayOutputs, TxOutputJSON{
+				To:     out.To,
+				Amount: float64(out.Amount) / 100.0, // 👈 關鍵：150 -> 1.50
+			})
+		}
+
+		// 轉換 Inputs (可選，主要是為了美觀)
+		var displayInputs []TxInputJSON
+		for _, in := range tx.Inputs {
+			displayInputs = append(displayInputs, TxInputJSON{
+				// 🚀 修正點：直接使用 in.TxID，不需要 hex.EncodeToString
+				TxID:  in.TxID,
+				Index: in.Index,
+			})
+		}
+
+		// ⭐ 最終回傳給前端的結果
 		result := map[string]interface{}{
 			"txid":   txid,
-			"block":  block.Hash, // 这里使用 block
+			"block":  hex.EncodeToString(block.Hash),
 			"height": idx.Height,
-			"tx":     tx,
+			"amount": float64(tx.GetTotalAmount()) / 100.0, // 如果你有這個方法的話
+			"details": map[string]interface{}{
+				"vin":  displayInputs,
+				"vout": displayOutputs,
+			},
+			"raw_tx": tx, // 如果你還需要原始數據可以留著，但前端顯示應使用上面處理過的
 		}
 
 		s.writeResult(w, req.ID, result)

@@ -19,38 +19,33 @@ func VerifyBlockWithUTXO(
 	}
 
 	tmp := utxo.Clone()
-	var totalFees int = 0 // 🚀 偵探新增：用來記錄這個區塊所有交易付出的手續費
+	var totalFees int = 0
 
-	// ----------------------------------------------------
-	// 4️⃣ 執行交易 (跳過 Coinbase 先算手續費)
-	// ----------------------------------------------------
+	// 4️⃣ 執行交易 (跳過 Coinbase)
 	for i, tx := range block.Transactions {
 		if i == 0 {
-			// Coinbase 暫時不 Add，因為我們要先驗證它的金額
 			continue
 		}
 
-		// 驗證簽名與餘額 (利用沙盒 tmp)
-		// 這裡傳入 nil 因為區塊內的依賴已經透過 tmp.Add 處理了
+		// 🚀 區塊內驗證不需要 Mempool，因為依賴項必須在區塊內的前面幾筆或已入帳
 		if err := VerifyTx(tx, tmp, nil); err != nil {
-			return fmt.Errorf("tx %s invalid: %v", tx.ID[:8], err)
+			return fmt.Errorf("交易 %s 驗證失敗: %v", tx.ID[:8], err)
 		}
 
-		// 累計手續費
 		totalFees += tx.Fee(tmp, nil)
 
-		// 執行花費並產生新 UTXO
 		if err := tmp.Spend(tx); err != nil {
-			return fmt.Errorf("double spend in block: %v", err)
+			return fmt.Errorf("區塊內偵測到雙花或資金來源異常: %v", err)
 		}
 		tmp.Add(tx)
 	}
 
-	// ----------------------------------------------------
 	// 5️⃣ 🕵️ 偵探嚴審：Coinbase 金額校驗
-	// ----------------------------------------------------
 	coinbaseTx := block.Transactions[0]
-	expectedReward := 100 + totalFees // 區塊獎勵 + 總手續費
+
+	// 🚀 修正點：使用 500 (5.00 YiCoin) 而非 100
+	// 💡 最佳實踐：如果 block 裡面有 Reward 欄位，直接用 block.Reward
+	expectedReward := 500 + totalFees
 
 	actualReward := 0
 	for _, out := range coinbaseTx.Outputs {
@@ -58,7 +53,8 @@ func VerifyBlockWithUTXO(
 	}
 
 	if actualReward > expectedReward {
-		return fmt.Errorf("coinbase reward too high: expected %d, got %d", expectedReward, actualReward)
+		return fmt.Errorf("礦工太貪心了！溢領獎勵：預期 %.2f, 實際領取 %.2f",
+			float64(expectedReward)/100.0, float64(actualReward)/100.0)
 	}
 
 	return nil
@@ -105,7 +101,8 @@ func VerifyTx(tx blockchain.Transaction, utxoSet *blockchain.UTXOSet, mempoolTxs
 							To:     out.To,
 						}
 						ok = true // 成功在 Mempool 找到了！
-						fmt.Printf("💡 [CPFP] 偵測到未確認的父交易輸入: %s\n", key)
+						fmt.Printf("💡 [CPFP] 偵測到連鎖交易！父交易輸入: %s\n", key)
+						fmt.Printf("💰 [CPFP] 該筆未確認金額為: %.2f YiCoin\n", float64(utxo.Amount)/100.0)
 					}
 				}
 			}

@@ -56,16 +56,16 @@ func (m *Mempool) AddTxRBF(txid string, txBytes []byte, utxo *blockchain.UTXOSet
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
-	// 1️⃣ 解析新交易
 	newTx, err := blockchain.DeserializeTransaction(txBytes)
 	if err != nil {
 		return false
 	}
 
-	// 2️⃣ 计算新交易 fee
 	newFee := newTx.Fee(utxo, m.Txs)
+	// 🕵️ 大偵探建議：定義一個最小增量 (0.01 YiCoin)
+	const MinIncrementalFee = 1
 
-	// 3️⃣ RBF：查找冲突
+	// 3️⃣ RBF：查找衝突
 	conflicts := m.findConflicts(newTx)
 	if len(conflicts) > 0 {
 		for oldTxid := range conflicts {
@@ -73,44 +73,34 @@ func (m *Mempool) AddTxRBF(txid string, txBytes []byte, utxo *blockchain.UTXOSet
 			oldTx, _ := blockchain.DeserializeTransaction(oldBytes)
 			oldFee := oldTx.Fee(utxo, m.Txs)
 
-			if newFee <= oldFee {
+			// 🚀 修改點：新小費必須比舊的小費多出至少一個門檻
+			if newFee < oldFee+MinIncrementalFee {
+				fmt.Printf("🚫 [RBF] 拒絕替換：新小費 %.2f 不足以覆蓋舊小費 %.2f (需多於 %.2f)\n",
+					float64(newFee)/100.0, float64(oldFee)/100.0, float64(MinIncrementalFee)/100.0)
 				return false
 			}
 		}
 
-		// 删除被 RBF 的交易
 		for oldTxid := range conflicts {
 			m.removeTxUnsafe(oldTxid)
 		}
 	}
 
-	// ================================
-	// 🔥 就是这里：mempool eviction
-	// ================================
+	// 🔥 Mempool Eviction (汰弱留強)
 	if len(m.Txs) >= m.MaxTx {
-
 		lowestTxid, lowestFee := m.findLowestFeeTx(utxo)
-
-		if lowestTxid == "" {
-			return false
-		}
-
-		if newFee <= lowestFee {
+		if lowestTxid == "" || newFee <= lowestFee {
 			return false
 		}
 
 		m.removeTxUnsafe(lowestTxid)
 
-		log.Println("🧹 mempool eviction:",
-			"drop =", lowestTxid,
-			"fee =", lowestFee,
-			"new fee =", newFee,
-		)
+		// 🚀 修改點：讓日誌印出人類看得懂的小數點
+		log.Printf("🧹 [Mempool Eviction] 踢掉低手續費交易: %s (Fee: %.2f) -> 換入新交易: %s (Fee: %.2f)\n",
+			lowestTxid[:8], float64(lowestFee)/100.0, txid[:8], float64(newFee)/100.0)
 	}
 
-	// 4️⃣ 真正加入 mempool
 	m.addTxUnsafe(txid, newTx, txBytes)
-
 	return true
 }
 

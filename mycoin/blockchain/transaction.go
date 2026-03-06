@@ -14,24 +14,25 @@ import (
 
 // UTXO input
 type TxInput struct {
-	TxID   string // 前一个交易ID
-	Index  int    // 前一个交易输出索引
-	Sig    string // 签名（DER hex）
-	PubKey string // 压缩公钥 hex
+	TxID   string `json:"txid"`   // 👈 對齊比特幣標準
+	Index  int    `json:"index"`  // 👈 對齊比特幣標準
+	Sig    string `json:"sig"`    // 👈 簽名
+	PubKey string `json:"pubkey"` // 👈 公鑰
 }
 
 // UTXO output
 type TxOutput struct {
-	Amount int
-	To     string // 收款公钥 hex
+	Amount int    `json:"amount"` // 👈 存的是 YiCent (整數)
+	To     string `json:"to"`     // 👈 收款地址
 }
 
 // Transaction
 type Transaction struct {
-	ID         string
-	Inputs     []TxInput
-	Outputs    []TxOutput
-	IsCoinbase bool
+	// 🚀 加入 JSON Tags，確保與前端/API 格式完全對齊
+	ID         string     `json:"txid"`
+	Inputs     []TxInput  `json:"vin"`
+	Outputs    []TxOutput `json:"vout"`
+	IsCoinbase bool       `json:"is_coinbase"`
 }
 
 type TxIndexEntry struct {
@@ -229,7 +230,14 @@ func (tx *Transaction) Fee(utxo *UTXOSet, mempoolTxs map[string][]byte) int {
 	for _, out := range tx.Outputs {
 		outSum += out.Amount
 	}
-	return inSum - outSum
+	fee := inSum - outSum
+	if fee < 0 {
+		// 這代表 Inputs < Outputs，有人在試圖造錢！
+		// 這裡回傳 0 或一個極小的負值，讓 AddTx 的 MinRelayFee 把他踢掉
+		return -1
+	}
+
+	return fee
 }
 func NewTransaction(inputs []TxInput, outputs []TxOutput) *Transaction {
 	tx := &Transaction{
@@ -286,4 +294,12 @@ func (tx *Transaction) DeterministicID() string {
 
 	sum := h.Sum(nil)
 	return hex.EncodeToString(sum)
+}
+
+func (tx *Transaction) GetTotalAmount() int {
+	total := 0
+	for _, out := range tx.Outputs {
+		total += out.Amount
+	}
+	return total
 }

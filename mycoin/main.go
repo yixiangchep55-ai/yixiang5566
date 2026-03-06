@@ -8,7 +8,8 @@ import (
 	"path/filepath"
 	"time" // 引入 time 包
 
-	indexer "mycoin/inxeder"
+	"mycoin/api"
+	"mycoin/indexer"
 	"mycoin/miner"
 	"mycoin/network"
 	"mycoin/node"
@@ -133,6 +134,13 @@ func main() {
 	go nd.Mine()
 
 	fmt.Println("⛏ Miner started (Node-controlled) with address:", nd.MiningAddress)
+
+	// ==========================================
+	// 🌟 6.5 啟動區塊瀏覽器 API 伺服器 (背景執行)
+	// ==========================================
+	if indexer.Enabled {
+		go api.StartServer("8080")
+	}
 
 	// -------------------------------
 	// 7. 阻塞主线程

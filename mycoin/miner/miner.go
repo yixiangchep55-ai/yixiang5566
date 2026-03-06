@@ -74,21 +74,29 @@ func (m *Miner) Mine(includeMempool bool) *blockchain.Block {
 		})
 
 		// ==========================================
-		// 🕵️ 大偵探新增：設定最低打包門檻 (放迴圈外面)
+		// 🕵️ 大偵探修改：繞過介面限制，直接計算 pkgs 裡的交易總數！
 		// ==========================================
-		const MinPackageFee = 10
+		mempoolSize := 0
+		for _, pkg := range pkgs {
+			mempoolSize += len(pkg.Txs) // 把每個包裹裡的交易數量加起來
+		}
 
+		baseFee := 1 // 基礎底價 (沒人排隊時，至少要 1 元才幫忙打包)
+
+		// 計算擁堵溢價 (Congestion Premium)
+		congestionPremium := (mempoolSize / 5) * 2
+
+		// 最終算出來的動態最低手續費
+		dynamicMinFee := baseFee + congestionPremium
+
+		fmt.Printf("📊 [Miner 報價中心] 排隊數: %d | 本期門檻: %.2f YiCoin\n", mempoolSize, float64(dynamicMinFee)/100.0)
 		// 2. 開始遍歷包裹
 		for _, pkg := range pkgs {
 
-			// ==========================================
-			// 🕵️ 大偵探新增：最低打包手續費過濾器！(放外層迴圈的第一行)
-			// 如果這包交易 (包含父+子) 的總利潤太低，礦工拒絕打包！
-			// ==========================================
-			if pkg.Fee < MinPackageFee {
-				// 溫馨提示：如果覺得日誌太吵，這行 Printf 可以註解掉
-				fmt.Printf("⚠️ [Miner] 忽略低手續費包裹 (總手續費僅 %d 元)\n", pkg.Fee)
-				continue // 跳過這個窮酸包裹，直接看下一個！
+			// 🚀 把原本的 MinPackageFee 換成我們算出來的 dynamicMinFee
+			if pkg.Fee < dynamicMinFee {
+				fmt.Printf("⚠️ [Miner] 忽略低手續費包裹 (%.2f < %.2f)\n", float64(pkg.Fee)/100.0, float64(dynamicMinFee)/100.0)
+				continue
 			}
 			// ==========================================
 

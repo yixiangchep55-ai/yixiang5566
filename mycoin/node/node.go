@@ -8,7 +8,7 @@ import (
 	"math/big"
 	"mycoin/blockchain"
 	"mycoin/database"
-	indexer "mycoin/inxeder"
+	"mycoin/indexer"
 	"mycoin/mempool"
 	"mycoin/miner"
 	"mycoin/utils"
@@ -125,7 +125,7 @@ func NewNode(mode string, datadir string) *Node {
 		Mempool: mempool.NewMempool(1000, db),
 		UTXO:    blockchain.NewUTXOSet(db),
 		Target:  target,
-		Reward:  100,
+		Reward:  500,
 		Blocks:  make(map[string]*BlockIndex), // ✓ 修正
 		//	BlockIndex: make(map[string]*blockchain.Block), // ✓ 修正
 		Orphans:        make(map[string][]*blockchain.Block),
@@ -194,7 +194,7 @@ func (n *Node) AddTx(tx blockchain.Transaction) bool {
 	// ==========================================
 	// 注意：這裡直接從當前 UTXO Set 查手續費
 	fee := tx.Fee(n.UTXO, n.Mempool.Txs)
-	const MinRelayFee = 5 // 只有手續費 >= 5 元才准進來
+	const MinRelayFee = 1 // 只有手續費 >= 1 元才准進來
 
 	if fee < MinRelayFee {
 		fmt.Printf("🚫 [Security] 交易 %s 手續費太低 (%d < %d)，直接在門外踢掉！\n", tx.ID[:8], fee, MinRelayFee)
