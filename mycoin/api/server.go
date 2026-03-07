@@ -16,6 +16,7 @@ func StartServer(port string) {
 	http.HandleFunc("/api/address/", getAddressBalance) // 💼 錢包查詢專用
 	http.HandleFunc("/api/transaction", sendTransaction)
 	http.HandleFunc("/api/estimatefee", getEstimateFee) // 📊 自動預測手續費
+	http.HandleFunc("/api/mempool", getMempool)
 
 	fmt.Printf("🌐 [API] 區塊瀏覽器 API 伺服器已啟動於 http://localhost:%s\n", port)
 	err := http.ListenAndServe(":"+port, nil)
@@ -215,4 +216,40 @@ func getEstimateFee(w http.ResponseWriter, r *http.Request) {
 	json.NewEncoder(w).Encode(map[string]interface{}{
 		"fee": rpcResp.Result,
 	})
+}
+
+// ⏳ 負責向底層 Node RPC (8081) 獲取 Mempool 的函數
+func getMempool(w http.ResponseWriter, r *http.Request) {
+	// 1. 迎賓招牌 (處理 CORS，讓 Vue 不會被擋)
+	w.Header().Set("Access-Control-Allow-Origin", "*")
+	w.Header().Set("Content-Type", "application/json")
+	if r.Method == "OPTIONS" {
+		return
+	}
+
+	// 2. 🚀 代替 Vue 去敲底層 Node RPC (8081) 的門
+	rpcBody := `{"method": "getmempool", "params": [], "id": 1}`
+	resp, err := http.Post("http://localhost:8081/rpc", "application/json", strings.NewReader(rpcBody))
+
+	if err != nil {
+		fmt.Println("⚠️ [API] 無法連線到 Node RPC (8081 沒開或連線失敗)")
+		// 如果節點沒開，回傳一個空陣列，保護前端不崩潰
+		json.NewEncoder(w).Encode([]interface{}{})
+		return
+	}
+	defer resp.Body.Close()
+
+	// 3. 解析 Node RPC 回傳的 JSON (把外層的 result 盒子拆開)
+	var rpcResp struct {
+		Result []interface{} `json:"result"`
+	}
+	json.NewDecoder(resp.Body).Decode(&rpcResp)
+
+	// 4. 防呆機制：如果 Mempool 是空的，確保傳給 Vue 的是 [] 而不是 null
+	if rpcResp.Result == nil {
+		rpcResp.Result = []interface{}{}
+	}
+
+	// 5. 把乾淨的陣列直接傳給 Vue！
+	json.NewEncoder(w).Encode(rpcResp.Result)
 }

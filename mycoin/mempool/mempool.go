@@ -4,9 +4,10 @@ import (
 	"fmt"
 	"log"
 	"mycoin/blockchain"
-	"sync"
-
 	"mycoin/database"
+	"strconv"
+	"sync"
+	"time"
 )
 
 type Mempool struct {
@@ -17,21 +18,26 @@ type Mempool struct {
 	Children map[string][]string // parent → children
 	MaxTx    int
 	DB       *database.BoltDB
+	Times    map[string]int64 // 👈 探長的打卡鐘：TxID -> Unix 時間戳
+
 }
 
 func (m *Mempool) Reset() {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-
 	m.Txs = make(map[string][]byte)
-	m.Spent = make(map[string]string)
 
+	// 🛡️ 探長加碼：清空的時候也要重新給一個新櫃子
+	m.Times = make(map[string]int64)
+
+	m.Spent = make(map[string]string)
 	m.Parents = make(map[string][]string)
 	m.Children = make(map[string][]string)
 }
 
 func NewMempool(maxTx int, db *database.BoltDB) *Mempool {
 	return &Mempool{
+		Times:    make(map[string]int64),
 		Txs:      make(map[string][]byte),
 		Spent:    make(map[string]string),
 		Parents:  make(map[string][]string),
@@ -175,6 +181,41 @@ func (m *Mempool) addTxUnsafe(
 		m.DB.Put("mempool", txid, txBytes)
 	}
 
+	// ==========================================
+	// 🌟 探長的「永恆記憶」持久化打卡鐘
+	// ==========================================
+	var enterTime int64
+	isNewTransaction := true
+
+	// 1. 嘗試從資料庫的 "mempool_times" 抽屜裡找舊時間 (防重啟歸零)
+	if m.DB != nil {
+		// 🚀 關鍵修正：只用一個變數接收！找不到的話 timeBytes 會是 nil 或長度為 0
+		timeBytes := m.DB.Get("mempool_times", txid)
+		if len(timeBytes) > 0 {
+			// 如果找到了，把存好的字串解碼回 int64
+			parsedTime, parseErr := strconv.ParseInt(string(timeBytes), 10, 64)
+			if parseErr == nil {
+				enterTime = parsedTime
+				isNewTransaction = false // 這是一筆重啟後載入的舊交易，不用打新卡！
+			}
+		}
+	}
+
+	// 2. 如果是剛收到的「全新交易」，打上現在的時間，並寫入資料庫保存！
+	if isNewTransaction {
+		enterTime = time.Now().Unix()
+		if m.DB != nil {
+			// 把時間數字變成字串，再變成 []byte 存進去
+			timeStr := strconv.FormatInt(enterTime, 10)
+			m.DB.Put("mempool_times", txid, []byte(timeStr))
+		}
+	}
+
+	// 3. 把最終確定的時間寫入記憶體，讓前端抓取
+	m.Times[txid] = enterTime
+	// ==========================================
+
+	// 👇 以下完美保留你原本的 UTXO 與關聯邏輯
 	for _, in := range tx.Inputs {
 		key := utxoKey(in.TxID, in.Index)
 		m.Spent[key] = txid
@@ -203,6 +244,7 @@ func (m *Mempool) removeTxUnsafe(txid string) {
 		}
 	}
 	delete(m.Txs, txid)
+	delete(m.Times, txid)
 
 	if m.DB != nil {
 		m.DB.Delete("mempool", txid)

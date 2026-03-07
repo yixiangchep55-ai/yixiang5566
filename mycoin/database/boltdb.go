@@ -47,9 +47,17 @@ func (db *BoltDB) Put(bucket, key string, value []byte) error {
 func (b *BoltDB) Get(bucket string, key string) []byte {
 	var val []byte
 	b.DB.View(func(tx *bolt.Tx) error {
-		v := tx.Bucket([]byte(bucket)).Get([]byte(key))
-		if v != nil {
-			val = append([]byte{}, v...)
+		// 1. 🕵️ 探長第一步：先拿出抽屜，不要急著拿資料！
+		bkt := tx.Bucket([]byte(bucket))
+
+		// 2. 🛡️ 探長防彈衣：檢查抽屜到底存不存在？
+		if bkt != nil {
+			// 3. 抽屜確實存在，這時才安全地伸手進去拿資料
+			v := bkt.Get([]byte(key))
+			if v != nil {
+				// 完美保留你原本複製資料的寫法
+				val = append([]byte{}, v...)
+			}
 		}
 		return nil
 	})

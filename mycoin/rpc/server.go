@@ -6,7 +6,10 @@ import (
 	"fmt"
 	"log"
 	"net/http"
+	"strconv"
+	"time"
 
+	"mycoin/blockchain"
 	"mycoin/network"
 )
 
@@ -279,6 +282,76 @@ func (s *RPCServer) handleRPC(w http.ResponseWriter, r *http.Request) {
 		}
 
 		s.writeResult(w, req.ID, result)
+
+	case "getmempool":
+		// 1. 準備一個空陣列，這很重要！讓 Vue 收到 [] 而不是 null
+		mempoolList := make([]map[string]interface{}, 0)
+
+		// 2. 呼叫你 mempool.go 裡寫好的 GetAll() 方法
+		allTxs := s.Node.Mempool.GetAll()
+
+		// 3. 遍歷拿到的所有交易
+		// 3. 遍歷拿到的所有交易
+		// 3. 遍歷拿到的所有交易
+		for txid, txBytes := range allTxs {
+			// 🕵️ 探長防彈衣：先從記憶體拿拿看時間
+			enterTime := s.Node.Mempool.Times[txid]
+
+			// ==========================================
+			// 🕵️ 探長的「惰性載入 (Lazy Load)」與自我修復魔法
+			// ==========================================
+			// 如果發現時間是 0 (代表這是剛重啟，記憶體失憶了)，我們就去查資料庫！
+			if enterTime == 0 && s.Node.Mempool.DB != nil {
+				timeBytes := s.Node.Mempool.DB.Get("mempool_times", txid)
+				if len(timeBytes) > 0 {
+					// 情況 A：資料庫裡有紀錄！立刻解碼恢復
+					parsedTime, err := strconv.ParseInt(string(timeBytes), 10, 64)
+					if err == nil {
+						enterTime = parsedTime
+					} else {
+						enterTime = time.Now().Unix() // 防呆機制
+					}
+				} else {
+					// 情況 B：連資料庫都沒有 (這是最古老的那幾筆幽靈交易)
+					// 直接給它現在的時間，並且「永久封裝」進資料庫，以後就不會忘了！
+					enterTime = time.Now().Unix()
+					timeStr := strconv.FormatInt(enterTime, 10)
+					s.Node.Mempool.DB.Put("mempool_times", txid, []byte(timeStr))
+				}
+
+				// 🧠 記憶體修復：把找回來的時間寫回記憶體！
+				// 這樣 3 秒後 Vue 再來問的時候，就不用再查資料庫了，速度飛快！
+				s.Node.Mempool.Times[txid] = enterTime
+			}
+			// ==========================================
+
+			// 解析 bytes 回交易物件
+			tx, err := blockchain.DeserializeTransaction(txBytes)
+
+			if err == nil {
+				// 成功解析時的處理
+				displayAmount := 0.0
+				if len(tx.Outputs) > 0 {
+					displayAmount = float64(tx.Outputs[0].Amount) / 100.0
+				}
+
+				mempoolList = append(mempoolList, map[string]interface{}{
+					"txid":   txid,
+					"amount": displayAmount,
+					"time":   enterTime, // 👈 現在這個時間絕對不會是 0 了！
+				})
+			} else {
+				// 如果解析失敗，至少把 txid 跟時間傳給前端
+				mempoolList = append(mempoolList, map[string]interface{}{
+					"txid":   txid,
+					"amount": 0.0,
+					"time":   enterTime, // 👈 失敗時也能帶著修復好的時間
+				})
+			}
+		}
+
+		// 4. 回傳精美的 JSON 給 Vue
+		s.writeResult(w, req.ID, mempoolList)
 
 	default:
 		s.writeError(w, req.ID, fmt.Sprintf("unknown method: %s", req.Method))
