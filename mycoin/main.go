@@ -1,6 +1,7 @@
 package main
 
 import (
+	"encoding/hex"
 	"flag"
 	"fmt"
 	"net"
@@ -56,19 +57,29 @@ func main() {
 	// dbPath := filepath.Join(*datadir, "chain.db") // unused variable
 	fmt.Println("📁 Using datadir:", *datadir)
 
-	// ==========================================
-	// 🚀 0. 初始化 PostgreSQL Indexer 資料庫
-	// ==========================================
-	indexer.InitDB()
-
 	// -------------------------------
 	// 1. 创建 Node
 	// -------------------------------
 	nd := node.NewNode(*mode, *datadir)
 	nd.Start()
 
+	// ==========================================
+	// 🧬 2. 提取 DNA 並初始化 PostgreSQL Indexer
+	// ==========================================
+	// 確保節點成功加載了區塊鏈 (至少會有 1 個創世區塊)
+	if len(nd.Chain) == 0 {
+		panic("🚨 嚴重錯誤：節點啟動失敗，沒有任何區塊！")
+	}
+
+	// 取得創世區塊的 Hash 並轉成 Hex 字串
+	// (注意：需要 import "encoding/hex")
+	genesisHash := hex.EncodeToString(nd.Chain[0].Hash)
+
+	// 把這串 DNA 傳給 Indexer 進行比對與大掃除！
+	indexer.InitDB(genesisHash)
+
 	// -------------------------------
-	// 2. 载入矿工钱包
+	// 3. 载入矿工钱包
 	// -------------------------------
 	walletPath := filepath.Join(*datadir, "miner.dat")
 	minerWallet := loadOrCreateMinerWallet(walletPath)
