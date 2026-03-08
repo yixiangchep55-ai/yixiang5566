@@ -4,8 +4,8 @@ import { ref, onMounted } from "vue";
 const mainBlocks = ref([]);
 const mempoolTxs = ref([]);
 const searchInput = ref("");
-// 🌟 新增：用來裝「錢包查詢結果」的變數
 const walletData = ref(null);
+const orphanBlocks = ref([]);
 
 const fetchBlocks = async () => {
   try {
@@ -13,6 +13,18 @@ const fetchBlocks = async () => {
     if (res.ok) mainBlocks.value = await res.json();
   } catch (error) {
     console.error("API 連線失敗！", error);
+  }
+};
+
+const fetchOrphans = async () => {
+  try {
+    const res = await fetch("http://localhost:8080/api/orphans");
+    if (res.ok) {
+      const data = await res.json();
+      orphanBlocks.value = data || [];
+    }
+  } catch (error) {
+    console.error("孤塊連線失敗！", error);
   }
 };
 
@@ -160,6 +172,7 @@ onMounted(() => {
   setInterval(() => {
     fetchBlocks();
     fetchMempool(); // 👈 每 3 秒抓一次
+    fetchOrphans();
   }, 3000);
 
   fetchRecommendedFee();
@@ -255,88 +268,208 @@ onMounted(() => {
             </p>
           </div>
         </div>
-        <div class="dashboard-grid">
-          <div class="table-card">
-            <div class="table-header">
-              <h2>📦 Latest Blocks</h2>
+        <div class="dashboard-layout">
+          <div class="dashboard-row">
+            <div
+              class="stats-column"
+              style="flex: 1; display: flex; flex-direction: column; gap: 30px"
+            >
+              <div
+                class="table-card stats-column"
+                style="
+                  flex: 1;
+                  padding: 25px;
+                  display: flex;
+                  flex-direction: column;
+                "
+              >
+                <div style="margin-bottom: 25px">
+                  <h2 style="color: #f39c12; margin-top: 0; font-size: 1.4rem">
+                    📈 Network Stats
+                  </h2>
+                  <div style="color: #aaa; font-size: 1rem; line-height: 1.8">
+                    <span
+                      style="font-size: 2rem; font-weight: bold; color: #fff"
+                      >1155.67 EH/s</span
+                    ><br />
+                    Next Difficulty Estimated<br />
+                    Average Block Time
+                  </div>
+                </div>
+
+                <hr
+                  style="
+                    border: 0;
+                    border-top: 1px solid #333;
+                    margin: 0 0 20px 0;
+                    width: 100%;
+                  "
+                />
+
+                <div style="flex: 1; text-align: center">
+                  <h2
+                    style="
+                      color: #3498db;
+                      margin-top: 0;
+                      text-align: left;
+                      font-size: 1.4rem;
+                    "
+                  >
+                    🥧 Miner Pool Distribution
+                  </h2>
+                  <div
+                    style="
+                      padding: 40px 0;
+                      color: #3498db;
+                      font-size: 1rem;
+                      line-height: 1.6;
+                    "
+                  >
+                    🚧 <b>圖表施工中預留位</b><br /><br />
+                    Foundry USA / AntPool<br />
+                    將在這裡完美呈現！
+                  </div>
+                </div>
+              </div>
             </div>
-            <div class="table-responsive">
-              <table class="btc-table">
-                <thead>
-                  <tr>
-                    <th>Height</th>
-                    <th>Hash</th>
-                    <th>Miner</th>
-                    <th class="right-align desktop-only">TXs</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  <tr v-for="block in mainBlocks" :key="block.Hash">
-                    <td class="height">
-                      <a href="#">{{ block.Height }}</a>
-                    </td>
-
-                    <td class="hash" :title="block.Hash" style="cursor: help">
-                      {{
-                        block.Hash ? block.Hash.substring(0, 8) : "Unknown"
-                      }}...
-                    </td>
-
-                    <td class="miner">
-                      <span
-                        class="miner-tag"
-                        v-if="block.Miner"
-                        :title="block.Miner"
-                        style="cursor: help"
-                      >
-                        {{ block.Miner.substring(0, 8) }}...
-                      </span>
-                    </td>
-
-                    <td class="tx right-align desktop-only">
-                      {{ block.TxCount }}
-                    </td>
-                  </tr>
-                </tbody>
-              </table>
+            <div class="table-card blocks-card" style="flex: 2">
+              <div class="table-header">
+                <h2>📦 Latest Blocks</h2>
+              </div>
+              <div class="table-responsive">
+                <table class="btc-table">
+                  <thead>
+                    <tr>
+                      <th>Height</th>
+                      <th>Hash</th>
+                      <th>Miner</th>
+                      <th class="right-align desktop-only">TXs</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    <tr v-for="block in mainBlocks" :key="block.Hash">
+                      <td class="height">
+                        <a href="#">{{ block.Height }}</a>
+                      </td>
+                      <td class="hash" :title="block.Hash" style="cursor: help">
+                        {{
+                          block.Hash ? block.Hash.substring(0, 8) : "Unknown"
+                        }}...
+                      </td>
+                      <td class="miner">
+                        <span
+                          class="miner-tag"
+                          v-if="block.Miner"
+                          :title="block.Miner"
+                          style="cursor: help"
+                        >
+                          {{ block.Miner.substring(0, 8) }}...
+                        </span>
+                      </td>
+                      <td class="tx right-align desktop-only">
+                        {{ block.TxCount }}
+                      </td>
+                    </tr>
+                  </tbody>
+                </table>
+              </div>
             </div>
           </div>
-
-          <div class="table-card mempool-card">
-            <div class="table-header">
-              <h2>⏳ Mempool</h2>
+          <div class="dashboard-row">
+            <div class="table-card mempool-card">
+              <div class="table-header">
+                <h2>⏳ Mempool (Unconfirmed Txs)</h2>
+              </div>
+              <div class="table-responsive">
+                <table class="btc-table">
+                  <thead>
+                    <tr>
+                      <th class="left-align">TxID</th>
+                      <th class="right-align">Amount</th>
+                      <th class="right-align">Time</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    <tr v-for="tx in mempoolTxs" :key="tx.txid">
+                      <td class="hash" :title="tx.txid" style="cursor: help">
+                        {{ tx.txid ? tx.txid.substring(0, 12) : "Unknown" }}...
+                      </td>
+                      <td class="right-align" style="color: #ffd700">
+                        {{ tx.amount ? tx.amount.toFixed(2) : "0.00" }} YiCoin
+                      </td>
+                      <td
+                        class="right-align"
+                        style="color: #888; font-size: 0.85em"
+                      >
+                        {{ tx.time ? formatTime(tx.time) : "Just now" }}
+                      </td>
+                    </tr>
+                    <tr v-if="mempoolTxs.length === 0">
+                      <td colspan="3" class="empty-state">
+                        No unconfirmed txs.
+                      </td>
+                    </tr>
+                  </tbody>
+                </table>
+              </div>
             </div>
-            <div class="table-responsive">
-              <table class="btc-table">
-                <thead>
-                  <tr>
-                    <th class="left-align">TxID</th>
-                    <th class="right-align">Amount</th>
-                    <th class="right-align">Time</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  <tr v-for="tx in mempoolTxs" :key="tx.txid">
-                    <td class="hash" :title="tx.txid" style="cursor: help">
-                      {{ tx.txid ? tx.txid.substring(0, 8) : "Unknown" }}...
-                    </td>
 
-                    <td class="right-align" style="color: #ffd700">
-                      {{ tx.amount ? tx.amount.toFixed(2) : "0.00" }} YiCoin
-                    </td>
-                    <td
-                      class="right-align"
-                      style="color: #888; font-size: 0.85em"
-                    >
-                      {{ tx.time ? formatTime(tx.time) : "Just now" }}
-                    </td>
-                  </tr>
-
-                  <tr v-if="mempoolTxs.length === 0">
-                    <td colspan="3" class="empty-state">No unconfirmed txs.</td>
-                  </tr>
-                </tbody>
-              </table>
+            <div class="table-card orphan-card">
+              <div class="table-header">
+                <h2>👻 Orphan Blocks</h2>
+              </div>
+              <div class="table-responsive">
+                <table class="btc-table">
+                  <thead>
+                    <tr>
+                      <th>Height</th>
+                      <th>Hash</th>
+                      <th>Miner</th>
+                      <th class="right-align desktop-only">TXs</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    <tr v-for="block in orphanBlocks" :key="block.Hash">
+                      <td class="height">
+                        <span style="color: #ff6b6b; font-weight: bold">{{
+                          block.Height
+                        }}</span>
+                      </td>
+                      <td class="hash" :title="block.Hash" style="cursor: help">
+                        {{
+                          block.Hash ? block.Hash.substring(0, 8) : "Unknown"
+                        }}...
+                      </td>
+                      <td class="miner">
+                        <span
+                          class="miner-tag"
+                          v-if="block.Miner"
+                          :title="block.Miner"
+                          style="
+                            cursor: help;
+                            background-color: rgba(255, 107, 107, 0.1);
+                            border: 1px solid #ff6b6b;
+                            color: #ff6b6b;
+                          "
+                        >
+                          {{ block.Miner.substring(0, 8) }}...
+                        </span>
+                      </td>
+                      <td class="tx right-align desktop-only">
+                        {{
+                          block.TxCount ||
+                          (block.Transactions ? block.Transactions.length : 0)
+                        }}
+                      </td>
+                    </tr>
+                    <tr v-if="orphanBlocks.length === 0">
+                      <td colspan="4" class="empty-state">
+                        No orphan blocks in memory.
+                      </td>
+                    </tr>
+                  </tbody>
+                </table>
+              </div>
             </div>
           </div>
         </div>
@@ -356,8 +489,7 @@ onMounted(() => {
     sans-serif;
   background-color: #111111;
   color: #ffffff;
-  height: 100vh;
-  overflow: hidden;
+  min-height: 100vh;
   display: flex;
   flex-direction: column;
 }
@@ -444,13 +576,12 @@ onMounted(() => {
   display: flex;
   width: 100%;
   box-sizing: border-box;
-  overflow: hidden;
 }
 .content-wrapper {
   display: flex;
   flex-direction: column;
   width: 100%;
-  height: 100%;
+  height: auto;
 }
 
 /* 🌟 錢包卡片專屬樣式 */
@@ -498,27 +629,38 @@ onMounted(() => {
   margin-left: 10px;
 }
 
-.dashboard-grid {
+/* =========================================
+   📊 探長修改：全新左右雙拼排版 (取代舊的 dashboard-grid)
+   ========================================= */
+.dashboard-layout {
+  display: flex;
+  flex-direction: column;
+  gap: 30px;
+  width: 100%;
+}
+
+.dashboard-row {
   display: flex;
   gap: 30px;
   width: 100%;
-  flex: 1;
-  min-height: 0;
 }
+
 .table-card {
   flex: 1;
+  min-width: 0; /* 🕵️ 探長微調：防止內容過長撐爆卡片寬度 */
   background-color: #1e1e1e;
   border-radius: 10px;
   border: 1px solid #333;
   display: flex;
   flex-direction: column;
-  min-width: 0;
+  min-height: 350px; /* 🕵️ 探長微調：給卡片一個基本高度 */
 }
 .table-header {
   padding: 15px 20px;
   border-bottom: 1px solid #333;
   background-color: #181818;
   flex-shrink: 0;
+  border-radius: 10px 10px 0 0; /* 🕵️ 探長微調：上面邊角加一點圓潤 */
 }
 .table-header h2 {
   margin: 0;
@@ -529,6 +671,9 @@ onMounted(() => {
   overflow-y: auto;
 }
 
+/* =========================================
+   📦 表格內容樣式 (完全保留你的原版)
+   ========================================= */
 .btc-table {
   width: 100%;
   border-collapse: collapse;
@@ -605,42 +750,9 @@ onMounted(() => {
   }
 }
 
-@media (max-width: 850px) {
-  .btc-explorer {
-    height: auto;
-    overflow: visible;
-  }
-  .header {
-    flex-direction: column;
-    align-items: flex-start;
-    padding: 15px 20px;
-  }
-  .search-bar {
-    width: 100%;
-    max-width: 100%;
-  }
-  .container {
-    display: block;
-    height: auto;
-    margin: 15px auto;
-  }
-  .content-wrapper {
-    height: auto;
-  }
-  .dashboard-grid {
-    flex-direction: column;
-    gap: 20px;
-    height: auto;
-  }
-  .table-card {
-    height: 50vh;
-  }
-  .desktop-only {
-    display: none;
-  }
-}
-
-/* 💸 轉帳卡片專屬樣式 */
+/* =========================================
+   💸 轉帳卡片專屬樣式 (完全保留你的原版)
+   ========================================= */
 .transfer-card {
   background-color: #1e1e1e;
   border: 1px solid #333;
@@ -736,7 +848,48 @@ onMounted(() => {
   font-size: 0.95rem;
 }
 
-@media (max-width: 850px) {
+/* =========================================
+   📱 響應式設計整合 (將你原有的兩塊 media 完美合併)
+   ========================================= */
+@media (max-width: 1000px) {
+  /* 🕵️ 探長微調：放寬到 1000px 讓新排版提早適應小螢幕 */
+  .btc-explorer {
+    height: auto;
+    overflow: visible;
+  }
+  .header {
+    flex-direction: column;
+    align-items: flex-start;
+    padding: 15px 20px;
+  }
+  .search-bar {
+    width: 100%;
+    max-width: 100%;
+  }
+  .container {
+    display: block;
+    height: auto;
+    margin: 15px auto;
+  }
+  .content-wrapper {
+    height: auto;
+  }
+
+  /* 🕵️ 探長修改：將 dashboard-grid 替換為我們新的 dashboard-row */
+  .dashboard-row {
+    flex-direction: column;
+    gap: 20px;
+    height: auto;
+  }
+
+  .table-card {
+    height: 50vh;
+  }
+  .desktop-only {
+    display: none;
+  }
+
+  /* 原本轉帳卡片的折疊設定 */
   .input-row {
     flex-direction: column;
     align-items: stretch;

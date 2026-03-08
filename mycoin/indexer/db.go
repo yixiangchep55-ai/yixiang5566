@@ -58,7 +58,8 @@ type SystemConfig struct {
 
 // 初始化資料庫連線
 // 🚀 探長修改：加上 currentGenesisHash 參數
-func InitDB(currentGenesisHash string) {
+// 🚀 探長升級：多傳入一個 nodeHeight (Node 當前的高度)
+func InitDB(currentGenesisHash string, nodeHeight int) {
 	// 1. 讀取環境變數
 	enabledEnv := os.Getenv("INDEXER_ENABLED")
 	if enabledEnv != "true" {
@@ -84,7 +85,7 @@ func InitDB(currentGenesisHash string) {
 		return
 	}
 
-	// 3. 自動建立資料表結構 (🚀 加上 SystemConfig)
+	// 3. 自動建立資料表結構
 	err = DB.AutoMigrate(&BlockRecord{}, &TxRecord{}, &AddressLedger{}, &SystemConfig{})
 	if err != nil {
 		fmt.Printf("⚠️  [Indexer] 自動建立資料表失敗: %v。自動降級為純節點模式。\n", err)
@@ -93,33 +94,43 @@ func InitDB(currentGenesisHash string) {
 	}
 
 	// ==========================================
-	// 🕵️ 4. 宇宙重置檢查 (Genesis Hash 鑑定)
+	// 🕵️ 4. 宇宙重置與時空落差檢查 (雙重防線)
 	// ==========================================
 	if currentGenesisHash != "" {
 		var config SystemConfig
-		// 去資料庫找找看有沒有存過 genesis_hash
 		result := DB.Where("key = ?", "genesis_hash").First(&config)
 
-		// 判斷邏輯：如果找不到 (第一次建表) 或 雜湊不一樣 (archive 被刪了)
-		if result.Error != nil || config.Value != currentGenesisHash {
-			fmt.Println("🚨 [Indexer] 偵測到新宇宙誕生 (Genesis Hash 變更)！正在清空 Postgres 舊索引...")
+		var blockCount int64
+		DB.Model(&BlockRecord{}).Count(&blockCount)
 
-			// 💥 Postgres 必殺技：TRUNCATE CASCADE 會一秒清空所有表並重置 ID 遞增
-			// 請確保這裡的表名 (snake_case) 與你的 GORM 模型對應
+		// 🚀 探長校準：
+		// 如果 nodeHeight <= 1 (代表本地剛重啟，只有創世區塊)
+		// 且 blockCount > 1 (代表 Postgres 還留著以前的舊區塊資料)
+		isNodeReset := (nodeHeight <= 1 && blockCount > 1) // 👈 這裡改為 <= 1
+
+		if result.Error != nil || config.Value != currentGenesisHash || isNodeReset {
+
+			if isNodeReset {
+				// 這裡提示也改得更精確一點
+				fmt.Printf("🚨 [Indexer] 偵測到時空落差 (Node 高度: %d, Indexer 高度: %d)！正在清空 Postgres...\n", nodeHeight, blockCount)
+			} else {
+				fmt.Println("🚨 [Indexer] 偵測到新宇宙誕生 (Genesis Hash 變更)！正在清空 Postgres 舊索引...")
+			}
+
+			// 💥 Postgres 必殺技 (這行寫得非常好，保持原樣)
 			err := DB.Exec("TRUNCATE TABLE block_records, tx_records, address_ledgers RESTART IDENTITY CASCADE;").Error
+
 			if err != nil {
 				fmt.Printf("❌ 清空資料表失敗: %v\n", err)
 			} else {
-				// 將新宇宙的 DNA 存進去
-				DB.Save(&SystemConfig{Key: "genesis_hash", Value: currentGenesisHash})
+				// 💡 這裡建議用 Assign，確保不管是新創還是更新都能寫入正確的 Hash
+				DB.Where("key = ?", "genesis_hash").Assign(SystemConfig{Value: currentGenesisHash}).FirstOrCreate(&SystemConfig{Key: "genesis_hash"})
 				fmt.Printf("✅ [Indexer] 清理完成！已鎖定新宇宙 DNA: %s...\n", currentGenesisHash[:8])
 			}
 		} else {
-			// DNA 吻合，平安無事
 			fmt.Printf("🔄 [Indexer] 宇宙驗證通過，當前 Genesis: %s...\n", config.Value[:8])
 		}
 	}
-	// ==========================================
 
 	Enabled = true
 	fmt.Println("✅ [Indexer] PostgreSQL 連線成功，大數據索引功能已啟動！")

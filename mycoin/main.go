@@ -76,8 +76,8 @@ func main() {
 	genesisHash := hex.EncodeToString(nd.Chain[0].Hash)
 
 	// 把這串 DNA 傳給 Indexer 進行比對與大掃除！
-	indexer.InitDB(genesisHash)
-
+	nodeHeight := len(nd.Chain)
+	indexer.InitDB(genesisHash, nodeHeight)
 	// -------------------------------
 	// 3. 载入矿工钱包
 	// -------------------------------
@@ -142,7 +142,7 @@ func main() {
 	time.Sleep(5 * time.Second)
 
 	// 啟動 Node 主控挖礦
-	//go nd.Mine()
+	go nd.Mine()
 
 	fmt.Println("⛏ Miner started (Node-controlled) with address:", nd.MiningAddress)
 
