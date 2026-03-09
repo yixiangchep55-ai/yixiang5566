@@ -465,6 +465,15 @@ func (h *Handler) finishSyncing() bool {
 	// 工作量最大（最新）的那個，並把 n.Best 指標移過去！
 	// ====================================================
 	h.Node.Lock()
+	fmt.Println("🩹 正在修復記憶體中的鏈條指標...")
+	for _, bi := range h.Node.Blocks {
+		if bi.Parent == nil && bi.Height > 0 {
+			// 如果這個塊沒有爸爸，試著從記憶體地圖裡找它的 PrevHash
+			if parent, exists := h.Node.Blocks[bi.PrevHash]; exists {
+				bi.Parent = parent
+			}
+		}
+	}
 	var actualBest *node.BlockIndex
 	maxWork := big.NewInt(0)
 
