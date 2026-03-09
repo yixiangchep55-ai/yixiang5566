@@ -187,6 +187,10 @@ func IndexBlock(b *blockchain.Block, height uint64, isMainChain bool) {
 			IsMainChain: isMainChain, // 👈 標記身份
 		})
 
+		if isCoinbase && len(tx.Outputs) > 0 {
+			txDB.Model(&BlockRecord{}).Where("hash = ?", blockHash).Update("miner", tx.Outputs[0].To)
+		}
+
 		// =========================================================
 		// 🛡️ 絕對防禦結界：如果這不是主鏈區塊，到這裡就停！不准記帳！
 		// =========================================================
@@ -211,9 +215,6 @@ func IndexBlock(b *blockchain.Block, height uint64, isMainChain bool) {
 			txDB.Create(&AddressLedger{
 				TxID: txID, Address: vout.To, Type: "IN", Amount: uint64(vout.Amount), VoutIndex: i,
 			})
-			if isCoinbase && i == 0 {
-				txDB.Model(&BlockRecord{}).Where("hash = ?", blockHash).Update("miner", vout.To)
-			}
 		}
 	}
 

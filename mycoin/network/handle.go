@@ -374,24 +374,26 @@ func (h *Handler) handleBlock(peer *Peer, msg *Message) {
 		parent.Children = append(parent.Children, bi)
 	}
 
-	// 6. [修復問題1] 同步接力邏輯
+	// ---------------------------------------------------------
+	// 6. 同步接力與狀態切換邏輯 (探長除錯版)
+	// ---------------------------------------------------------
 
-	// 如果我們原本在同步中
 	if h.Node.IsSyncing {
-		if !h.Node.AllBodiesDownloaded() {
-			// 還有缺塊（Header 有但 Body 沒有），繼續要 Body
-			h.requestMissingBlockBodies(peer)
-			return // 如果還在要缺塊，就先別廣播了，專心同步
-		} else {
-			// Body 都齊了，結束同步模式
+		// 檢查是否還有任何「已知 Header 但缺少 Body」的區塊
+		if !h.Node.HasMissingBodies() {
+			// Body 都齊了！我們目前知道的區塊已經完美無缺了。
 			h.finishSyncing()
 			h.requestMempool(peer)
+		} else {
+			// 還有缺塊，繼續要「下一批」Body。
+			// 注意：不用 return！讓它繼續往下走去要 Headers！
+			h.requestMissingBlockBodies(peer)
 		}
 	}
 
-	// 🔥🔥🔥 關鍵新增：主動索取更多區塊！ 🔥🔥🔥
-	// 無論是否同步完成，我們都發送一個 GetHeaders，告訴對方我們現在最新的 Hash 是什麼
-	// 如果對方有更長的鏈，它就會回傳新的 Headers 給我們
+	// 🔥🔥🔥 探長的引擎升級：永遠保持對新區塊的渴望 🔥🔥🔥
+	// 只要收到新的區塊並成功上鏈，我們就順便問問對方：「還有更新的嗎？」
+	// 這能確保我們不會卡在高度 80！
 	peer.Send(Message{
 		Type: MsgGetHeaders,
 		Data: GetHeadersPayload{
@@ -399,10 +401,10 @@ func (h *Handler) handleBlock(peer *Peer, msg *Message) {
 		},
 	})
 
-	// 8. 廣播 (只在非同步狀態下廣播，避免同步時產生大量流量)
-	// 注意：如果是初始同步(IBD)，通常不廣播，但如果是即時挖礦，必須廣播
+	// ---------------------------------------------------------
+	// 8. 廣播新區塊 (只在已同步狀態下進行)
+	// ---------------------------------------------------------
 	if h.Node.SyncState == node.SyncSynced {
-		// 使用 broadcastInvExcept 避免發回給來源節點 (雖然你的 broadcastInv 也行，但 Except 更好)
 		h.broadcastInvExcept(hashHex, peer)
 	}
 }

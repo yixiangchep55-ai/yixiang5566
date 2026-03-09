@@ -1,11 +1,65 @@
 <script setup>
 import { ref, onMounted } from "vue";
 
+// --- 1. 狀態定義 ---
 const mainBlocks = ref([]);
 const mempoolTxs = ref([]);
+const orphanBlocks = ref([]);
 const searchInput = ref("");
 const walletData = ref(null);
-const orphanBlocks = ref([]);
+const showWallet = ref(false);
+const successTxId = ref("");
+const txData = ref(null);
+const closeTxModal = () => {
+  txData.value = null;
+};
+
+const txForm = ref({
+  to: "",
+  amount: "",
+  fee: 0.01,
+});
+const txMessage = ref("");
+const txStatus = ref("");
+
+// --- 2. 工具函數 ---
+
+// ⌚ 全能時光機：支援 Mempool (字串) 與區塊 (數字)
+const formatTime = (timestamp) => {
+  if (!timestamp || timestamp === 0) return "Just now";
+  const now = Math.floor(Date.now() / 1000);
+  let diff;
+
+  if (typeof timestamp === "string") {
+    diff = now - Math.floor(new Date(timestamp).getTime() / 1000);
+  } else {
+    diff = now - timestamp;
+  }
+
+  if (diff < 0) return "Just now";
+  if (diff < 60) return `${diff}s ago`;
+  if (diff < 3600) return `${Math.floor(diff / 60)}m ago`;
+  if (diff < 86400) return `${Math.floor(diff / 3600)}h ago`;
+  return new Date(
+    typeof timestamp === "number" ? timestamp * 1000 : timestamp,
+  ).toLocaleDateString();
+};
+
+const toggleWallet = () => {
+  showWallet.value = !showWallet.value;
+};
+
+const copyToClipboard = async (text) => {
+  try {
+    await navigator.clipboard.writeText(text);
+    // 這裡可以用 alert，或是之後我們做個更漂亮的 Toast 提示
+    alert("Copied to clipboard: " + text.substring(0, 8) + "...");
+  } catch (err) {
+    console.error("複製失敗:", err);
+  }
+};
+
+// --- 3. API 請求函數 ---
 
 const fetchBlocks = async () => {
   try {
@@ -19,163 +73,148 @@ const fetchBlocks = async () => {
 const fetchOrphans = async () => {
   try {
     const res = await fetch("http://localhost:8080/api/orphans");
-    if (res.ok) {
-      const data = await res.json();
-      orphanBlocks.value = data || [];
-    }
+    if (res.ok) orphanBlocks.value = (await res.json()) || [];
   } catch (error) {
     console.error("孤塊連線失敗！", error);
   }
 };
 
-// 🌟 新增：真正去後端「查水表」的魔法
-const handleSearch = async () => {
-  const query = searchInput.value.trim();
-  if (!query) return;
-
-  try {
-    const res = await fetch(`http://localhost:8080/api/address/${query}`);
-    if (res.ok) {
-      walletData.value = await res.json(); // 把查到的結果存起來顯示
-    } else {
-      alert("無法查詢該地址！");
-    }
-  } catch (error) {
-    console.error("搜尋失敗", error);
-  }
-  searchInput.value = ""; // 清空搜尋框
-};
-
-// 💸 轉帳專用變數
-// 💸 轉帳專用變數
-const txForm = ref({
-  to: "",
-  amount: "",
-  fee: 0.01, // 🚀 修正：預設為 0.01 YiCoin (底層的 1 YiCent)，這才合理！
-});
-const txMessage = ref("");
-const txStatus = ref("");
-
-// ==========================================
-// 📡 裝備一：手續費雷達 (獨立出來)
-// ==========================================
-const fetchRecommendedFee = async () => {
-  try {
-    const res = await fetch("http://localhost:8080/api/estimatefee");
-    const data = await res.json();
-    if (data.fee !== undefined) {
-      txForm.value.fee = data.fee; // 自動把報價填入輸入框！
-    }
-  } catch (error) {
-    console.error("無法取得預估手續費", error);
-  }
-};
-
-// 🚀 引擎啟動：一打開網頁就自動掃描一次手續費！
-fetchRecommendedFee();
-
-// 🌟 新增：去後端撈取 Mempool 的函數
-// 🌟 現代化 REST 版本：清爽、簡單、直接！
 const fetchMempool = async () => {
   try {
     const res = await fetch("http://localhost:8080/api/mempool");
-
     if (res.ok) {
       const data = await res.json();
-
-      // 🕵️ 探長的時光排序魔法 (升級版：時間 + TxID 雙重防線)
-      if (data && Array.isArray(data)) {
-        data.sort((a, b) => {
-          // 第一關：先比時間 (時間越大的越接近現在，排在越前面)
-          const timeA = a.time || 0;
-          const timeB = b.time || 0;
-
-          if (timeB !== timeA) {
-            return timeB - timeA; // 時間不一樣，誰晚來誰就在上面！
-          }
-
-          // 第二關：如果時間一模一樣 (例如重啟時同時載入的舊交易)
-          // 就用 TxID 的字母順序來排，保證畫面永遠不會亂跳！
-          if (a.txid && b.txid) {
-            return a.txid.localeCompare(b.txid);
-          }
-
-          return 0;
-        });
+      if (Array.isArray(data)) {
+        data.sort((a, b) => (b.time || 0) - (a.time || 0));
+        mempoolTxs.value = data;
+      } else {
+        // 🧹 探長防線：如果 Go 傳回 null (代表沒交易了)，強制清空畫面！
+        mempoolTxs.value = [];
       }
-
-      mempoolTxs.value = data || [];
     }
   } catch (error) {
     console.error("Mempool 連線失敗！", error);
   }
 };
 
+const fetchRecommendedFee = async () => {
+  try {
+    const res = await fetch("http://localhost:8080/api/estimatefee");
+    const data = await res.json();
+    if (data.fee !== undefined) txForm.value.fee = data.fee;
+  } catch (error) {
+    console.error("無法取得預估手續費", error);
+  }
+};
+
+// --- 4. 交互操作 ---
+
+// 🌟 2. 雙引擎雷達 (REST API 版)
+const handleSearch = async () => {
+  const query = searchInput.value.trim();
+  if (!query) return;
+
+  walletData.value = null;
+  txData.value = null;
+
+  try {
+    if (query.length === 64) {
+      // 🕵️ 呼叫我們剛剛在 Go 裡寫好的 /api/tx/ 端點！
+      const res = await fetch(`http://localhost:8080/api/tx/${query}`);
+      if (res.ok) {
+        txData.value = await res.json();
+      } else {
+        alert("找不到該筆交易！它可能不存在，或是節點尚未同步。");
+      }
+    } else {
+      // 查地址維持不變
+      const res = await fetch(`http://localhost:8080/api/address/${query}`);
+      if (res.ok) {
+        walletData.value = await res.json();
+      } else {
+        alert("無法查詢該地址！");
+      }
+    }
+  } catch (error) {
+    console.error("搜尋失敗", error);
+  }
+  searchInput.value = "";
+};
+
 // ==========================================
-// 🚀 裝備二：發送交易的魔法函數
+// 🚀 裝備二：發送交易的魔法函數 (升級自動清除訊息)
 // ==========================================
 const handleSendTx = async () => {
-  // 檢查有沒有填寫完整 (加入對 fee 的檢查)
   if (!txForm.value.to || !txForm.value.amount || txForm.value.fee === "") {
-    txMessage.value = "⚠️ Please fill in all fields (including Fee)!";
+    txMessage.value = "⚠️ Please fill in all fields!";
     txStatus.value = "error";
+
+    // 🕵️ 探長魔法：3 秒後清除警告
+    setTimeout(() => {
+      txMessage.value = "";
+    }, 3000);
     return;
   }
 
   try {
-    // 呼叫我們在 Go 寫的轉帳 API
     const res = await fetch("http://localhost:8080/api/transaction", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
         to: txForm.value.to,
         amount: parseFloat(txForm.value.amount),
-        fee: parseFloat(txForm.value.fee), // 👈 大偵探修正：千萬別忘了把小費傳給後端！
+        fee: parseFloat(txForm.value.fee),
       }),
     });
 
     const data = await res.json();
     if (res.ok && !data.error) {
-      txMessage.value = `✅ Success! Tx sent to Mempool. TxID: ${data.txid.substring(0, 8)}...`;
+      txMessage.value = "✅ Success! Tx sent to Mempool.";
       txStatus.value = "ok";
-
-      // 清空輸入框，但保留最新的手續費報價！
       txForm.value.to = "";
       txForm.value.amount = "";
+      successTxId.value = data.txid;
 
-      // 發送成功後，重新抓取最新的區塊與手續費
-      if (typeof fetchBlocks === "function") fetchBlocks();
-      fetchRecommendedFee();
+      setTimeout(() => {
+        fetchMempool();
+        fetchRecommendedFee();
+      }, 1000);
+
+      // 🕵️ 探長魔法：成功後，5 秒自動把訊息變不見！
+      setTimeout(() => {
+        txMessage.value = "";
+        txStatus.value = "";
+        successTxId.value = "";
+      }, 8000);
     } else {
       txMessage.value = `❌ Failed: ${data.error || "Unknown error"}`;
       txStatus.value = "error";
+      setTimeout(() => {
+        txMessage.value = "";
+      }, 5000); // 錯誤訊息也定時清除
     }
   } catch (error) {
-    console.error("轉帳失敗", error);
-    txMessage.value = "❌ Network error! Is the Go server running?";
+    txMessage.value = "❌ Network error!";
     txStatus.value = "error";
+    setTimeout(() => {
+      txMessage.value = "";
+    }, 5000);
   }
 };
 
-// ==========================================
-// 🕒 裝備三：時間格式化函數 (維持你原本的)
-// ==========================================
-const formatTime = (timestamp) => {
-  const date = new Date(timestamp * 1000);
-  return date.toLocaleString("zh-TW", { hour12: false });
-};
-
+// --- 5. 🚀 引擎啟動：生命週期鉤子 ---
 onMounted(() => {
   fetchBlocks();
-  fetchMempool(); // 👈 剛打開網頁時抓一次
+  fetchOrphans();
+  fetchMempool();
+  fetchRecommendedFee();
 
+  // 每 10 秒自動刷新一次數據，讓瀏覽器動起來！
   setInterval(() => {
     fetchBlocks();
-    fetchMempool(); // 👈 每 3 秒抓一次
     fetchOrphans();
-  }, 3000);
-
-  fetchRecommendedFee();
+    fetchMempool();
+  }, 10000);
 });
 </script>
 
@@ -195,6 +234,13 @@ onMounted(() => {
           @keyup.enter="handleSearch"
         />
         <button @click="handleSearch">Search</button>
+        <button
+          @click="toggleWallet"
+          class="wallet-toggle-btn"
+          :class="{ 'btn-active': showWallet }"
+        >
+          {{ showWallet ? "✖ Close" : "🚀 Send" }}
+        </button>
       </div>
 
       <div class="network-status desktop-only">
@@ -228,46 +274,169 @@ onMounted(() => {
           </div>
         </div>
 
-        <div class="transfer-card">
-          <div class="card-header">
-            <h2>💸 Send YiCoin (From Node Wallet)</h2>
-          </div>
-          <div class="transfer-form">
-            <div class="input-row">
-              <div class="input-group">
-                <label>Recipient Address (To)</label>
-                <input
-                  v-model="txForm.to"
-                  type="text"
-                  placeholder="e.g. 19QoLXuub8kGUy..."
-                />
-              </div>
-              <div class="input-group amount-group">
-                <label>Amount</label>
-                <input
-                  v-model="txForm.amount"
-                  type="number"
-                  step="0.1"
-                  placeholder="0.0"
-                />
-              </div>
-              <div class="input-group amount-group">
-                <label>Fee (Auto)</label>
-                <input v-model="txForm.fee" type="number" step="1" />
-              </div>
-              <button class="send-btn" @click="handleSendTx">🚀 Send</button>
-            </div>
+        <div
+          v-if="txData"
+          class="transfer-card"
+          style="margin-bottom: 20px; position: relative"
+        >
+          <button
+            @click="closeTxModal"
+            style="
+              position: absolute;
+              top: 15px;
+              right: 15px;
+              background: transparent;
+              border: none;
+              cursor: pointer;
+              font-size: 1.2rem;
+              opacity: 0.7;
+            "
+          >
+            ✖️
+          </button>
+
+          <h3 style="color: #f7931a; margin-top: 0">Transaction Details</h3>
+
+          <div
+            style="
+              background: rgba(0, 0, 0, 0.2);
+              padding: 15px;
+              border-radius: 8px;
+              margin-top: 15px;
+            "
+          >
             <p
-              v-if="txMessage"
-              :class="{
-                'success-msg': txStatus === 'ok',
-                'error-msg': txStatus === 'error',
-              }"
+              style="
+                margin: 0 0 10px 0;
+                display: flex;
+                align-items: center;
+                gap: 8px;
+              "
             >
-              {{ txMessage }}
+              <strong>TxID:</strong>
+              <span
+                style="font-family: monospace; color: #aaa; cursor: help"
+                :title="txData.txid"
+              >
+                {{ txData.txid.substring(0, 16) }}...
+              </span>
+              <button @click="copyToClipboard(txData.txid)" class="copy-btn">
+                📋
+              </button>
+            </p>
+
+            <p style="margin: 0 0 10px 0">
+              <strong>Status:</strong>
+              <span v-if="txData.blockHash" style="color: #4ade80"
+                >✅ Confirmed</span
+              >
+              <span v-else style="color: #f7931a">⏳ In Mempool</span>
+            </p>
+
+            <div
+              v-if="txData.blockHash"
+              style="display: flex; gap: 30px; margin-bottom: 10px"
+            >
+              <p style="margin: 0">
+                <strong>Block Height:</strong> {{ txData.blockHeight }}
+              </p>
+              <p style="margin: 0">
+                <strong>Block Hash:</strong>
+                <span
+                  style="font-family: monospace; font-size: 0.9em; cursor: help"
+                  :title="txData.blockHash"
+                >
+                  {{ txData.blockHash.substring(0, 10) }}...
+                </span>
+              </p>
+            </div>
+
+            <p
+              v-if="txData.amount !== undefined"
+              style="
+                margin: 0;
+                padding-top: 10px;
+                border-top: 1px solid rgba(255, 255, 255, 0.1);
+              "
+            >
+              <strong>Total Value:</strong>
+              <span style="color: #4ade80; font-weight: bold; font-size: 1.1em">
+                {{ txData.amount }} YIC
+              </span>
             </p>
           </div>
         </div>
+
+        <transition name="wallet-slide">
+          <div v-if="showWallet" class="transfer-card">
+            <div class="card-header">
+              <h2>💸 Send YiCoin (From Node Wallet)</h2>
+            </div>
+            <div class="transfer-form">
+              <div class="input-row">
+                <div class="input-group">
+                  <label>Recipient Address (To)</label>
+                  <input
+                    v-model="txForm.to"
+                    type="text"
+                    placeholder="e.g. 19QoLXuub8kGUy..."
+                  />
+                </div>
+                <div class="input-group amount-group">
+                  <label>Amount</label>
+                  <input
+                    v-model="txForm.amount"
+                    type="number"
+                    step="0.1"
+                    placeholder="0.0"
+                  />
+                </div>
+                <div class="input-group amount-group">
+                  <label>Fee (Auto)</label>
+                  <input v-model="txForm.fee" type="number" step="1" />
+                </div>
+                <button class="send-btn" @click="handleSendTx">🚀 Send</button>
+              </div>
+              <div
+                v-if="txMessage"
+                :class="{
+                  'success-msg': txStatus === 'ok',
+                  'error-msg': txStatus === 'error',
+                }"
+                style="
+                  display: flex;
+                  align-items: center;
+                  justify-content: space-between;
+                  padding: 10px;
+                  margin-top: 15px;
+                  border-radius: 4px;
+                "
+              >
+                <span>{{ txMessage }}</span>
+
+                <div
+                  v-if="successTxId"
+                  style="display: flex; align-items: center; gap: 6px"
+                >
+                  <span
+                    style="font-family: monospace; cursor: help; opacity: 0.9"
+                    :title="successTxId"
+                  >
+                    TxID: {{ successTxId.substring(0, 8) }}...
+                  </span>
+                  <button
+                    @click="copyToClipboard(successTxId)"
+                    class="copy-btn"
+                    title="Copy TxID"
+                    style="opacity: 0.8; visibility: visible"
+                  >
+                    📋
+                  </button>
+                </div>
+              </div>
+            </div>
+          </div>
+        </transition>
         <div class="dashboard-layout">
           <div class="dashboard-row">
             <div
@@ -343,6 +512,7 @@ onMounted(() => {
                       <th>Height</th>
                       <th>Hash</th>
                       <th>Miner</th>
+                      <th>Time</th>
                       <th class="right-align desktop-only">TXs</th>
                     </tr>
                   </thead>
@@ -351,20 +521,53 @@ onMounted(() => {
                       <td class="height">
                         <a href="#">{{ block.Height }}</a>
                       </td>
-                      <td class="hash" :title="block.Hash" style="cursor: help">
-                        {{
-                          block.Hash ? block.Hash.substring(0, 8) : "Unknown"
-                        }}...
+                      <td class="hash" :title="block.Hash">
+                        <div
+                          style="display: flex; align-items: center; gap: 8px"
+                        >
+                          <span style="cursor: help">
+                            {{
+                              block.Hash
+                                ? block.Hash.substring(0, 8)
+                                : "Unknown"
+                            }}...
+                          </span>
+
+                          <button
+                            @click="copyToClipboard(block.Hash)"
+                            class="copy-btn"
+                            title="Copy Full Hash"
+                          >
+                            📋
+                          </button>
+                        </div>
                       </td>
                       <td class="miner">
-                        <span
-                          class="miner-tag"
-                          v-if="block.Miner"
-                          :title="block.Miner"
-                          style="cursor: help"
+                        <div
+                          style="display: flex; align-items: center; gap: 8px"
                         >
-                          {{ block.Miner.substring(0, 8) }}...
-                        </span>
+                          <span
+                            class="miner-tag"
+                            :title="block.Miner"
+                            style="cursor: help"
+                          >
+                            {{
+                              block.Miner
+                                ? block.Miner.substring(0, 8)
+                                : "Unknown"
+                            }}...
+                          </span>
+                          <button
+                            @click="copyToClipboard(block.Miner)"
+                            class="copy-btn"
+                            title="Copy Miner Address"
+                          >
+                            📋
+                          </button>
+                        </div>
+                      </td>
+                      <td style="color: #888; font-size: 0.9em">
+                        {{ formatTime(block.Timestamp) }}
                       </td>
                       <td class="tx right-align desktop-only">
                         {{ block.TxCount }}
@@ -391,8 +594,24 @@ onMounted(() => {
                   </thead>
                   <tbody>
                     <tr v-for="tx in mempoolTxs" :key="tx.txid">
-                      <td class="hash" :title="tx.txid" style="cursor: help">
-                        {{ tx.txid ? tx.txid.substring(0, 12) : "Unknown" }}...
+                      <td class="hash" :title="tx.txid">
+                        <div
+                          style="display: flex; align-items: center; gap: 8px"
+                        >
+                          <span style="cursor: help">
+                            {{
+                              tx.txid ? tx.txid.substring(0, 12) : "Unknown"
+                            }}...
+                          </span>
+
+                          <button
+                            @click="copyToClipboard(tx.txid)"
+                            class="copy-btn"
+                            title="Copy Full TxID"
+                          >
+                            📋
+                          </button>
+                        </div>
                       </td>
                       <td class="right-align" style="color: #ffd700">
                         {{ tx.amount ? tx.amount.toFixed(2) : "0.00" }} YiCoin
@@ -425,6 +644,7 @@ onMounted(() => {
                       <th>Height</th>
                       <th>Hash</th>
                       <th>Miner</th>
+                      <th>Time</th>
                       <th class="right-align desktop-only">TXs</th>
                     </tr>
                   </thead>
@@ -435,25 +655,58 @@ onMounted(() => {
                           block.Height
                         }}</span>
                       </td>
-                      <td class="hash" :title="block.Hash" style="cursor: help">
-                        {{
-                          block.Hash ? block.Hash.substring(0, 8) : "Unknown"
-                        }}...
+                      <td class="hash" :title="block.Hash">
+                        <div
+                          style="display: flex; align-items: center; gap: 8px"
+                        >
+                          <span style="cursor: help">
+                            {{
+                              block.Hash
+                                ? block.Hash.substring(0, 8)
+                                : "Unknown"
+                            }}...
+                          </span>
+
+                          <button
+                            @click="copyToClipboard(block.Hash)"
+                            class="copy-btn"
+                            title="Copy Full Block Hash"
+                          >
+                            📋
+                          </button>
+                        </div>
                       </td>
                       <td class="miner">
-                        <span
-                          class="miner-tag"
+                        <div
                           v-if="block.Miner"
-                          :title="block.Miner"
-                          style="
-                            cursor: help;
-                            background-color: rgba(255, 107, 107, 0.1);
-                            border: 1px solid #ff6b6b;
-                            color: #ff6b6b;
-                          "
+                          style="display: flex; align-items: center; gap: 8px"
                         >
-                          {{ block.Miner.substring(0, 8) }}...
-                        </span>
+                          <span
+                            class="miner-tag"
+                            :title="block.Miner"
+                            style="
+                              cursor: help;
+                              background-color: rgba(255, 107, 107, 0.1);
+                              border: 1px solid #ff6b6b;
+                              color: #ff6b6b;
+                            "
+                          >
+                            {{ block.Miner.substring(0, 8) }}...
+                          </span>
+
+                          <button
+                            @click="copyToClipboard(block.Miner)"
+                            class="copy-btn"
+                            title="Copy Miner Address"
+                          >
+                            📋
+                          </button>
+                        </div>
+                      </td>
+                      <td
+                        style="color: #ff6b6b; font-size: 0.9em; opacity: 0.8"
+                      >
+                        {{ formatTime(block.Timestamp) }}
                       </td>
                       <td class="tx right-align desktop-only">
                         {{
@@ -639,21 +892,31 @@ onMounted(() => {
   width: 100%;
 }
 
+.dashboard-layout .dashboard-row:first-child {
+  margin-top: 20px !important; /* 👈 補上結尾的斜線 */
+}
+
 .dashboard-row {
   display: flex;
   gap: 30px;
   width: 100%;
+  height: 530px; /* 👈 直接把高度釘死在外框！ */
+  align-items: stretch; /* 強迫裡面的卡片上下填滿 */
+  margin-bottom: 30px;
 }
 
 .table-card {
+  height: 100% !important; /* 🔒 鎖死：絕對要等於外層的高度 (480px)，不准偷長高！ */
+  margin: 0 !important; /* 🔪 拔除任何會推擠的外邊距 */
   flex: 1;
-  min-width: 0; /* 🕵️ 探長微調：防止內容過長撐爆卡片寬度 */
+  min-width: 0;
   background-color: #1e1e1e;
   border-radius: 10px;
   border: 1px solid #333;
   display: flex;
   flex-direction: column;
-  min-height: 350px; /* 🕵️ 探長微調：給卡片一個基本高度 */
+  box-sizing: border-box;
+  overflow: hidden; /* 確保內容不會溢出邊界 */
 }
 .table-header {
   padding: 15px 20px;
@@ -753,6 +1016,37 @@ onMounted(() => {
 /* =========================================
    💸 轉帳卡片專屬樣式 (完全保留你的原版)
    ========================================= */
+.wallet-slide-enter-active,
+.wallet-slide-leave-active {
+  transition: all 0.4s cubic-bezier(0.4, 0, 0.2, 1); /* 使用貝茲曲線讓動作更流暢 */
+  max-height: 500px; /* 設定一個足夠撐開的高度值 */
+  opacity: 1;
+}
+
+.wallet-slide-enter-from,
+.wallet-slide-leave-to {
+  max-height: 0;
+  opacity: 0;
+  transform: translateY(-20px); /* 消失時往上縮回 */
+  margin-bottom: 0;
+  overflow: hidden; /* 防止內容在縮放時溢出 */
+}
+.wallet-toggle-btn {
+  margin-left: 12px;
+  background-color: #2ecc71 !important;
+  border: none;
+  font-weight: bold;
+  transition: all 0.3s ease;
+}
+
+.wallet-toggle-btn:hover {
+  background-color: #27ae60 !important;
+  transform: scale(1.05);
+}
+
+.btn-active {
+  background-color: #e74c3c !important; /* 開啟時變紅色，方便關閉 */
+}
 .transfer-card {
   background-color: #1e1e1e;
   border: 1px solid #333;
@@ -846,6 +1140,40 @@ onMounted(() => {
   font-weight: bold;
   margin-top: 10px;
   font-size: 0.95rem;
+}
+
+/* 📋 複製按鈕樣式 */
+.copy-btn {
+  background: transparent !important;
+  border: none !important;
+  padding: 2px 5px !important;
+  cursor: pointer;
+  font-size: 0.8rem;
+
+  /* 🕵️ 探長秘訣：預設透明度為 0 */
+  opacity: 0;
+  transition:
+    opacity 0.2s ease-in-out,
+    transform 0.2s; /* 讓出現的過程變平滑 */
+
+  display: flex;
+  align-items: center;
+}
+
+/* 🔥 當滑鼠移入表格儲存格 (td) 時，讓按鈕現身 */
+td:hover .copy-btn {
+  opacity: 0.8; /* 隱約現身 */
+  visibility: visible;
+}
+
+/* 🌟 當滑鼠直接指著按鈕時，全亮並放大 */
+.copy-btn:hover {
+  opacity: 1 !important;
+  transform: scale(1.2);
+}
+
+.copy-btn:active {
+  transform: scale(0.9);
 }
 
 /* =========================================

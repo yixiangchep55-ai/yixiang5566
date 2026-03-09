@@ -307,6 +307,16 @@ func (n *Node) AddBlock(block *blockchain.Block) bool {
 	// 雖然 connectBlock 裡可能有 Flush，但這裡做最後確認，確保 Kali 重啟必對。
 	// n.UTXO.FlushToDB() // 如果 connectBlock 已經做了，這裡可省略
 
+	isMain := false
+	curr := n.Best
+	for curr != nil {
+		if curr.Hash == hashHex {
+			isMain = true
+			break
+		}
+		curr = curr.Parent
+	}
+
 	// 4. 釋放 Node 鎖
 	n.mu.Unlock()
 
@@ -317,7 +327,6 @@ func (n *Node) AddBlock(block *blockchain.Block) bool {
 	// 處理孤兒塊：這會啟動遞迴，因為鎖已放開，不會發生死鎖
 	go n.attachOrphans(hashHex)
 
-	isMain := n.IsOnMainChain(n.Blocks[hashHex])
 	go indexer.IndexBlock(block, block.Height, isMain)
 
 	return true

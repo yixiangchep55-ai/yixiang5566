@@ -17,6 +17,7 @@ func StartServer(port string) {
 	http.HandleFunc("/api/transaction", sendTransaction)
 	http.HandleFunc("/api/estimatefee", getEstimateFee) // 📊 自動預測手續費
 	http.HandleFunc("/api/mempool", getMempool)
+	http.HandleFunc("/api/tx/", getTransactionDetails)
 
 	fmt.Printf("🌐 [API] 區塊瀏覽器 API 伺服器已啟動於 http://localhost:%s\n", port)
 	err := http.ListenAndServe(":"+port, nil)
@@ -252,4 +253,61 @@ func getMempool(w http.ResponseWriter, r *http.Request) {
 
 	// 5. 把乾淨的陣列直接傳給 Vue！
 	json.NewEncoder(w).Encode(rpcResp.Result)
+}
+
+// 🔍 專門用來查詢「單筆交易詳情」的函數
+func getTransactionDetails(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Access-Control-Allow-Origin", "*")
+	w.Header().Set("Content-Type", "application/json")
+	if r.Method == "OPTIONS" {
+		return
+	}
+
+	txID := strings.TrimPrefix(r.URL.Path, "/api/tx/")
+	if len(txID) != 64 {
+		http.Error(w, `{"error": "無效的交易 ID"}`, http.StatusBadRequest)
+		return
+	}
+
+	// 🕵️ 第一關：去 PostgreSQL 資料庫找 (已打包的交易)
+	var tx indexer.TxRecord
+	if err := indexer.DB.Where("tx_id = ?", txID).First(&tx).Error; err == nil {
+		// 算金額：計算這筆交易產生的所有 Output 總和
+		var totalAmount float64
+		indexer.DB.Model(&indexer.AddressLedger{}).
+			Where("tx_id = ? AND type = 'IN'", txID). // Type="IN" 代表資金流出到別人的地址 (Output)
+			Select("COALESCE(SUM(amount), 0)").Scan(&totalAmount)
+
+		json.NewEncoder(w).Encode(map[string]interface{}{
+			"txid":        tx.TxID,
+			"blockHash":   tx.BlockHash,
+			"blockHeight": tx.BlockHeight,
+			"amount":      totalAmount / 100.0, // 還原成 YiCoin
+		})
+		return
+	}
+
+	// 🕵️ 第二關：資料庫沒有？去 Mempool 撈看看 (剛發送還沒打包的)
+	rpcBody := `{"method": "getmempool", "params": [], "id": 1}`
+	resp, err := http.Post("http://localhost:8081/rpc", "application/json", strings.NewReader(rpcBody))
+	if err == nil {
+		defer resp.Body.Close()
+		var rpcResp struct {
+			Result []map[string]interface{} `json:"result"`
+		}
+		json.NewDecoder(resp.Body).Decode(&rpcResp)
+
+		for _, mTx := range rpcResp.Result {
+			if mTx["txid"] == txID { // 在 Mempool 裡抓到了！
+				json.NewEncoder(w).Encode(map[string]interface{}{
+					"txid":   txID,
+					"amount": mTx["amount"], // Mempool 通常有帶金額
+				})
+				return
+			}
+		}
+	}
+
+	// 💀 第三關：真的找不到
+	http.Error(w, `{"error": "找不到該筆交易"}`, http.StatusNotFound)
 }
