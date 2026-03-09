@@ -493,14 +493,8 @@ func (h *Handler) finishSyncing() {
 	// ====================================================
 	if len(newMainChain) == 0 || newMainChain[0].Height != 0 {
 		fmt.Println("⚠️ [Sync] 嚴重警告：發現斷鏈！記憶體中的區塊鏈無法追溯到創世區塊。")
-		if h.Node.Best != nil {
-			fmt.Printf("⚠️ 目前只收集到 %d 個實體區塊 (最新高度 %d)，拒絕提早畢業！繼續討要區塊...\n", len(newMainChain), h.Node.Best.Height)
-		}
-
-		// 呼叫你的補塊函數，讓它繼續去把缺的肉要回來！
-		// 傳入 nil 讓它對所有鄰居廣播，或者根據你原本的實作發送
-		h.requestMissingBlockBodies(nil)
-		return // 🛑 強制退出，絕對不准往下執行重建 UTXO！
+		// 2. 這裡把那行 requestMissingBlockBodies 刪掉，我們直接 return 攔截就好！
+		return
 	}
 	// ====================================================
 
