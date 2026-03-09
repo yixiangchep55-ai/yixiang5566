@@ -133,6 +133,18 @@ func (n *Node) connectBlock(block *blockchain.Block, parent *BlockIndex) bool {
 	// ----------------------------------------------------
 	chainSwitched := false
 
+	// ==========================================================
+	// 🚨 探長的終極綠色通道：同步期間只存積木，不接主鏈，不算帳！
+	// ==========================================================
+	if n.IsSyncing {
+		// 在同步期間，我們只負責把區塊存進 n.Blocks 和 DB，建立父子關係。
+		// 絕對不要去更新 n.Best 或是呼叫 n.updateUTXO()！
+		// 所有的結算，都會在 handle.go 的 finishSyncing 裡面一次搞定！
+		return true
+	}
+	// ==========================================================
+
+	// 下面這些，只有在「非同步狀態（平常挖礦、日常接收新塊）」時才會執行！
 	if parent == n.Best {
 		n.Best = bi
 		n.Chain = append(n.Chain, block)
@@ -165,7 +177,7 @@ func (n *Node) connectBlock(block *blockchain.Block, parent *BlockIndex) bool {
 		txCount := 0
 		for _, tx := range block.Transactions {
 			if !tx.IsCoinbase {
-				n.Mempool.Remove(tx.ID) // 👈 請確認函數名
+				n.Mempool.Remove(tx.ID)
 				txCount++
 			}
 		}
@@ -179,12 +191,9 @@ func (n *Node) connectBlock(block *blockchain.Block, parent *BlockIndex) bool {
 			// 頻道已滿，代表信號已在處理中，安全跳過
 		}
 	}
-	// ----------------------------------------------------
-	// 6️⃣ 處理孤塊
-	// ----------------------------------------------------
-	//n.attachOrphans(hashHex)
 
 	return true
+
 }
 func (n *Node) attachOrphans(parentHash string) {
 	n.mu.Lock() // 🔒 短暫上鎖，安全提取孤塊名單
