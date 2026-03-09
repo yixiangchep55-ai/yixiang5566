@@ -381,12 +381,20 @@ func (h *Handler) handleBlock(peer *Peer, msg *Message) {
 	if h.Node.IsSyncing {
 		// 檢查是否還有任何「已知 Header 但缺少 Body」的區塊
 		if !h.Node.HasMissingBodies() {
-			// Body 都齊了！我們目前知道的區塊已經完美無缺了。
-			h.finishSyncing()
-			h.requestMempool(peer)
+			// ==========================================================
+			// 🚨 探長的精準攔截點：只有「畢業成功」才准去要 Mempool！
+			// ==========================================================
+			if h.finishSyncing() {
+				// 只有當這條鏈完整連回創世塊 (高度 0)，才會執行這裡
+				h.requestMempool(peer)
+			} else {
+				// 斷鏈了，拒絕發放畢業證書。
+				// 下面的 MsgGetHeaders 會繼續去追討剩下的區塊。
+				fmt.Println("🕵️ [Debug] 同步尚未完全，攔截 Mempool 請求以防報錯。")
+			}
+			// ==========================================================
 		} else {
 			// 還有缺塊，繼續要「下一批」Body。
-			// 注意：不用 return！讓它繼續往下走去要 Headers！
 			h.requestMissingBlockBodies(peer)
 		}
 	}
@@ -449,7 +457,7 @@ func (h *Handler) handleMempool(peer *Peer, msg *Message) {
 	}
 }
 
-func (h *Handler) finishSyncing() {
+func (h *Handler) finishSyncing() bool {
 	fmt.Println("📥 所有區塊內容已補齊，準備切換至最新鏈狀態...")
 
 	// ====================================================
@@ -492,9 +500,8 @@ func (h *Handler) finishSyncing() {
 	// 🚨 探長的終極防線：檢查是否真的連回了創世區塊 (高度 0)
 	// ====================================================
 	if len(newMainChain) == 0 || newMainChain[0].Height != 0 {
-		fmt.Println("⚠️ [Sync] 嚴重警告：發現斷鏈！記憶體中的區塊鏈無法追溯到創世區塊。")
-		// 2. 這裡把那行 requestMissingBlockBodies 刪掉，我們直接 return 攔截就好！
-		return
+		fmt.Println("⚠️ [Sync] 嚴重警告：發現斷鏈！拒絕提早畢業！")
+		return false // 👈 告訴外面：同步失敗！
 	}
 	// ====================================================
 
@@ -519,7 +526,9 @@ func (h *Handler) finishSyncing() {
 
 	if h.Node.Best != nil {
 		fmt.Printf("✅ 同步完成！當前高度: %d, Tip: %x\n", h.Node.Best.Height, h.Node.Best.Hash)
+
 	}
+	return true
 }
 func (h *Handler) broadcastInvExcept(hash string, except *Peer) {
 	h.Network.mu.Lock()
@@ -778,13 +787,19 @@ func (h *Handler) handleHeaders(peer *Peer, msg *Message) {
 		// 🔥🔥🔥 [關鍵修改]：主動判斷是否該畢業了 🔥🔥🔥
 		// 如果目前狀態不是「已同步」，且檢查後發現我們並不缺塊
 		// 那就代表我們已經跟對方一樣新了，必須強制結束同步！
+		// 🔥🔥🔥 [探長升級版]：主動判斷是否該畢業了 🔥🔥🔥
 		if h.Node.SyncState != node.SyncSynced {
 			if !h.Node.HasMissingBodies() {
-				fmt.Println("✨ 偵測到雙方高度一致且無缺塊，主動切換至『已同步』狀態...")
-				h.finishSyncing() // 👈 這行是讓礦工開工的關鍵鑰匙！
-				h.requestMempool(peer)
+				fmt.Println("✨ 偵測到雙方高度一致且無缺塊，嘗試切換至『已同步』狀態...")
+
+				// 🚨 這裡改用 if 判斷！只有真正通過「祖宗十八代核實」才准拿 Mempool
+				if h.finishSyncing() {
+					h.requestMempool(peer)
+				} else {
+					fmt.Println("🕵️ [Debug] 發現鏈條不完整，拒絕領取 Mempool 交易。")
+				}
+
 			} else {
-				// 如果雖然對方沒新 Header，但我們自己還有舊的 Body 沒抓完
 				h.requestMissingBlockBodies(peer)
 			}
 		}
@@ -832,15 +847,19 @@ func (h *Handler) handleHeaders(peer *Peer, msg *Message) {
 	// 🔥🔥🔥 [關鍵修正邏輯] 🔥🔥🔥
 	// =================================================================
 
-	// 2️⃣ 情況 B：收到了 Header，但「全部都是重複的」 (addedCount == 0)
+	// 2️⃣ 情況 B：收到了 Header，但「全部都是重複的」
 	if addedCount == 0 && headersCount > 0 {
 		fmt.Println("✅ All received headers were already known. Headers sync complete.")
 		h.Node.HeadersSynced = true
 
-		// 🔥 同樣檢查是否可以直接進入挖礦狀態
 		if !h.Node.HasMissingBodies() {
-			fmt.Println("✨ 資料已齊全，切換至已同步狀態...")
-			h.finishSyncing()
+			fmt.Println("✨ 資料已齊全，嘗試切換至已同步狀態...")
+
+			// 🚨 同樣這裡也要改！
+			if h.finishSyncing() {
+				h.requestMempool(peer) // 建議這裡也順便要一下 Mempool
+			}
+
 		} else {
 			h.requestMissingBlockBodies(peer)
 		}
