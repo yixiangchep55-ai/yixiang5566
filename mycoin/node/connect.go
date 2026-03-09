@@ -7,6 +7,7 @@ import (
 	"log"
 	"math/big"
 	"mycoin/blockchain"
+
 	"mycoin/utils"
 )
 
@@ -51,11 +52,11 @@ func (n *Node) connectBlock(block *blockchain.Block, parent *BlockIndex) bool {
 	cumWork := new(big.Int).Add(parent.CumWorkInt, work)
 
 	// ----------------------------------------------------
-	// 2️⃣ 驗證區塊 (UTXO & Transaction) - 僅在非同步模式下嚴格檢查
+	// 2️⃣ 驗證區塊 (UTXO & Transaction)
 	// ----------------------------------------------------
-	// 注意：如果你還沒有實作 VerifyBlockWithUTXO，請保持註解，以免編譯失敗。
-	// 等你 UTXO 邏輯穩定了再開。
-	if !n.IsSyncing {
+	// 🚨 探長改裝：只有狀態完全等於「SyncSynced (已同步)」時，才准進行 UTXO 檢查！
+	// 這樣不論 IsSyncing 是什麼值，只要你還沒同步完，這裡就不會噴紅字。
+	if n.SyncState == SyncSynced {
 		err := VerifyBlockWithUTXO(block, parent.Block, n.UTXO)
 		if err != nil {
 			log.Println("❌ Block validation failed:", err)
@@ -136,10 +137,7 @@ func (n *Node) connectBlock(block *blockchain.Block, parent *BlockIndex) bool {
 	// ==========================================================
 	// 🚨 探長的終極綠色通道：同步期間只存積木，不接主鏈，不算帳！
 	// ==========================================================
-	if n.IsSyncing {
-		// 在同步期間，我們只負責把區塊存進 n.Blocks 和 DB，建立父子關係。
-		// 絕對不要去更新 n.Best 或是呼叫 n.updateUTXO()！
-		// 所有的結算，都會在 handle.go 的 finishSyncing 裡面一次搞定！
+	if n.SyncState != SyncSynced { // 👈 統一用 SyncState 判斷，邏輯最穩！
 		return true
 	}
 	// ==========================================================

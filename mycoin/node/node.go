@@ -131,6 +131,13 @@ func NewNode(mode string, datadir string) *Node {
 		Orphans:        make(map[string][]*blockchain.Block),
 		DB:             db,
 		MinerResetChan: make(chan bool, 1),
+		// ==========================================
+		// 🚨 探長加碼：給節點戴上「實習生」臂章
+		// 確保它一出生就知道自己該先安靜同步！
+		// ==========================================
+		IsSyncing: true,        // 👈 強制設定為同步中
+		SyncState: SyncHeaders, // 👈 設定初始狀態為「抓取標頭」
+		// ==========================================
 	}
 
 	return n
