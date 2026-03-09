@@ -20,6 +20,8 @@ type MinerNode interface {
 	GetMempool() *mempool.Mempool
 	AddBlockInterface(blk *blockchain.Block) error
 
+	RemoveFromMempool(txID string)
+
 	IsSynced() bool
 	GetResetChan() chan bool
 
@@ -118,10 +120,12 @@ func (m *Miner) Mine(includeMempool bool) *blockchain.Block {
 					continue
 				}
 
+				// 👷 探長指示：因為我們改用「核彈排毒法 (if n.AddBlock)」，
+				// 這裡不再需要 X光安檢門了！直接無腦打包！
+				// 毒交易等一下交給 Node.go 裡的 AddBlock 去抓！
+
 				txs = append(txs, *tx)
 				included[tx.ID] = true
-
-				// ❌ 注意：這裡千萬不要再加 totalFee 了！
 			}
 		}
 	}

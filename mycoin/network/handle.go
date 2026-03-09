@@ -470,10 +470,7 @@ func (h *Handler) finishSyncing() {
 
 	// 如果找到了更強的鏈，就更新 Best 指標
 	if actualBest != nil && (h.Node.Best == nil || actualBest.CumWorkInt.Cmp(h.Node.Best.CumWorkInt) > 0) {
-
-		// ❌ 原本是 currentHeight := 0
-		var currentHeight uint64 = 0 // ✅ 改成這樣！明確告訴 Go 它是 uint64
-
+		var currentHeight uint64 = 0
 		if h.Node.Best != nil {
 			currentHeight = h.Node.Best.Height
 		}
@@ -483,19 +480,35 @@ func (h *Handler) finishSyncing() {
 	h.Node.Unlock()
 	// ====================================================
 
-	// 1. 更新標誌位
-	h.Node.BodiesSynced = true
-	h.Node.SyncState = node.SyncSynced
-	h.Node.IsSyncing = false
-
-	// 2. 刷新主鏈視角 (n.Chain)
+	// 1. 🔍 探長的第一步：先往回找祖先，試組裝主鏈 (不要急著宣佈畢業！)
 	newMainChain := []*blockchain.Block{}
 	cur := h.Node.Best // 👈 現在這個 cur 已經是最新的高度了！
 	for cur != nil && cur.Block != nil {
 		newMainChain = append([]*blockchain.Block{cur.Block}, newMainChain...)
 		cur = cur.Parent
 	}
+
+	// ====================================================
+	// 🚨 探長的終極防線：檢查是否真的連回了創世區塊 (高度 0)
+	// ====================================================
+	if len(newMainChain) == 0 || newMainChain[0].Height != 0 {
+		fmt.Println("⚠️ [Sync] 嚴重警告：發現斷鏈！記憶體中的區塊鏈無法追溯到創世區塊。")
+		if h.Node.Best != nil {
+			fmt.Printf("⚠️ 目前只收集到 %d 個實體區塊 (最新高度 %d)，拒絕提早畢業！繼續討要區塊...\n", len(newMainChain), h.Node.Best.Height)
+		}
+
+		// 呼叫你的補塊函數，讓它繼續去把缺的肉要回來！
+		// 傳入 nil 讓它對所有鄰居廣播，或者根據你原本的實作發送
+		h.requestMissingBlockBodies(nil)
+		return // 🛑 強制退出，絕對不准往下執行重建 UTXO！
+	}
+	// ====================================================
+
+	// 2. 🏆 通過防線！確定鏈是完整的！正式更新標誌位與主鏈
 	h.Node.Chain = newMainChain
+	h.Node.BodiesSynced = true
+	h.Node.SyncState = node.SyncSynced
+	h.Node.IsSyncing = false
 
 	// ==========================================
 	// 💾 3. 終極存檔：把最新高度寫進資料庫，徹底治好失憶症！
@@ -506,11 +519,12 @@ func (h *Handler) finishSyncing() {
 	}
 
 	// 4. 全局重建 UTXO (確保同步後的餘額與狀態絕對正確)
-	// 👈 因為前面的 n.Chain 已經更新到最新，這裡就會算到 3950 元！
+	// 👈 因為前面的防線已經確保 newMainChain 是從 0 樓到頂樓的完整大樓，
+	// 所以這裡重建 UTXO 絕對不會發生找不到爸爸的慘劇！
 	h.Node.RebuildUTXO()
 
 	if h.Node.Best != nil {
-		fmt.Printf("✅ 同步完成！當前高度: %d, Tip: %s\n", h.Node.Best.Height, h.Node.Best.Hash)
+		fmt.Printf("✅ 同步完成！當前高度: %d, Tip: %x\n", h.Node.Best.Height, h.Node.Best.Hash)
 	}
 }
 func (h *Handler) broadcastInvExcept(hash string, except *Peer) {

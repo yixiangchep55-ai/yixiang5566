@@ -165,6 +165,10 @@ func (n *Node) Mine() {
 				n.BroadcastNewBlock(newBlock)
 			} else {
 				fmt.Println("⚠️ [Node] 嚴重警告：自己挖到的區塊驗證失敗")
+				for _, tx := range newBlock.Transactions {
+					// Coinbase 交易本來就不在 Mempool 裡，踢了也沒影響
+					n.RemoveFromMempool(tx.ID)
+				}
 			}
 
 			// 🔥🔥🔥 關鍵修正：挖到塊之後，強制休息 2 秒！ 🔥🔥🔥
@@ -959,3 +963,11 @@ func (n *Node) Lock() {
 func (n *Node) Unlock() {
 	n.mu.Unlock()
 }
+
+func (n *Node) RemoveFromMempool(txID string) {
+	if n.Mempool != nil {
+		n.Mempool.Remove(txID)
+	}
+}
+
+// ==========================================
