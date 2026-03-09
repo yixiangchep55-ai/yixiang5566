@@ -114,6 +114,19 @@ func (h *Handler) handleVersion(peer *Peer, msg *Message) {
 	peer.CumWork = v.CumWork
 	peer.State = StateVersionRecv
 
+	// ==========================================================
+	// 🚨 探長智商升級包：轉換工作量並啟動動態切換！
+	// ==========================================================
+	peerWork := new(big.Int)
+	// 假設你的 CumWork 是 16 進位字串，如果解析失敗會回傳 false，這裡做個小保護
+	if _, ok := peerWork.SetString(v.CumWork, 16); !ok {
+		peerWork.SetInt64(0) // 如果對方傳來爛資料，當作 0 處理
+	}
+
+	// 呼叫我們的心血結晶，讓節點決定是不是該「畢業」了！
+	h.Node.EvaluateSyncStatus(v.Height, peerWork)
+	// ==========================================================
+
 	// 发送 verack
 	peer.Send(Message{Type: MsgVerAck})
 }
@@ -524,6 +537,10 @@ func (h *Handler) finishSyncing() bool {
 		fmt.Printf("⚠️ [Sync] 依然斷鏈！目前起點高度: %d\n",
 			func() uint64 {
 				if len(newMainChain) > 0 {
+					fmt.Printf("🕵️ [Debug] 第 1 塊積木(Height: %d) 紀錄的爸爸 Hash 是: %x\n",
+						newMainChain[0].Height, newMainChain[0].PrevHash)
+					fmt.Printf("🕵️ [Debug] 我現在記憶體裡的創世塊 Hash 是: %x\n",
+						h.Node.Blocks[hex.EncodeToString(blockchain.NewGenesisBlock(h.Node.Target).Hash)].Hash)
 					return newMainChain[0].Height
 				}
 				return 999

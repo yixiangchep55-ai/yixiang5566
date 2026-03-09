@@ -995,4 +995,33 @@ func (n *Node) RemoveFromMempool(txID string) {
 	}
 }
 
+// EvaluateSyncStatus 根據鄰居的工作量，動態決定自己是否需要同步
+func (n *Node) EvaluateSyncStatus(peerHeight uint64, peerWork *big.Int) {
+	n.Lock()
+	defer n.Unlock()
+
+	// 確保安全獲取本地工作量
+	localWork := big.NewInt(0)
+	localHeight := uint64(0)
+	if n.Best != nil {
+		localHeight = n.Best.Height
+		if n.Best.CumWorkInt != nil {
+			localWork = n.Best.CumWorkInt
+		}
+	}
+
+	// 🚨 探長終極邏輯：比對累積工作量！
+	if peerWork != nil && peerWork.Cmp(localWork) > 0 {
+		n.IsSyncing = true
+		n.SyncState = SyncHeaders // (記得前綴)
+		fmt.Printf("🛰️ [Network] 鄰居工作量 (%s) 大於本地 (%s)，進入同步模式...\n",
+			peerWork.Text(16)[:8]+"...", localWork.Text(16)[:8]+"...")
+		// 印出前8碼就好，不然太長
+	} else {
+		n.IsSyncing = false
+		n.SyncState = SyncSynced
+		fmt.Printf("✅ [Network] 本地高度 %d，我們的工作量已是全網最強，隨時可開工！\n", localHeight)
+	}
+}
+
 // ==========================================
