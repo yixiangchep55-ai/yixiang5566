@@ -460,83 +460,93 @@ func (h *Handler) handleMempool(peer *Peer, msg *Message) {
 func (h *Handler) finishSyncing() bool {
 	fmt.Println("📥 所有區塊內容已補齊，準備切換至最新鏈狀態...")
 
-	// ====================================================
-	// 🚀 關鍵修復：在算錢之前，先找出剛剛下載的區塊中，
-	// 工作量最大（最新）的那個，並把 n.Best 指標移過去！
-	// ====================================================
-	h.Node.Lock()
-	fmt.Println("🩹 正在修復記憶體中的鏈條指標...")
-	for _, bi := range h.Node.Blocks {
-		if bi.Parent == nil && bi.Height > 0 {
-			// 如果這個塊沒有爸爸，試著從記憶體地圖裡找它的 PrevHash
-			if parent, exists := h.Node.Blocks[bi.PrevHash]; exists {
-				bi.Parent = parent
+	h.Node.Lock() // 🔒 拿鎖，開始動大手術
+
+	fmt.Println("🩹 執行深度鏈條修復...")
+	for {
+		changed := false
+		for _, bi := range h.Node.Blocks {
+			if bi.Height > 0 && bi.Parent == nil {
+				if p, exists := h.Node.Blocks[bi.PrevHash]; exists {
+					bi.Parent = p
+					changed = true
+				} else {
+					// 從硬碟救援指標
+					data := h.Node.DB.Get("blocks", bi.PrevHash)
+
+					// 直接檢查長度即可，nil 也會回傳 0
+					if len(data) > 0 {
+						parentBlock, err := blockchain.DeserializeBlock(data)
+						if err == nil {
+							pIdx := &node.BlockIndex{
+								Hash:      hex.EncodeToString(parentBlock.Hash),
+								Height:    bi.Height - 1,
+								Block:     parentBlock,
+								PrevHash:  hex.EncodeToString(parentBlock.PrevHash),
+								Bits:      parentBlock.Bits,
+								Timestamp: parentBlock.Timestamp,
+							}
+							h.Node.Blocks[pIdx.Hash] = pIdx
+							bi.Parent = pIdx
+							changed = true
+							fmt.Printf("💾 從硬碟救援了高度 %d 的區塊指標\n", pIdx.Height)
+						}
+					}
+				}
 			}
 		}
+		if !changed {
+			break
+		}
 	}
-	var actualBest *node.BlockIndex
-	maxWork := big.NewInt(0)
 
+	// 重新尋找最強鏈頭
+	var actualBest *node.BlockIndex
 	for _, bi := range h.Node.Blocks {
-		// 必須要有實體區塊，且工作量比目前找到的還大
-		if bi.Block != nil && bi.CumWorkInt.Cmp(maxWork) > 0 {
-			maxWork = bi.CumWorkInt
+		if bi.Block != nil && (actualBest == nil || bi.Height > actualBest.Height) {
 			actualBest = bi
 		}
 	}
-
-	// 如果找到了更強的鏈，就更新 Best 指標
-	if actualBest != nil && (h.Node.Best == nil || actualBest.CumWorkInt.Cmp(h.Node.Best.CumWorkInt) > 0) {
-		var currentHeight uint64 = 0
-		if h.Node.Best != nil {
-			currentHeight = h.Node.Best.Height
-		}
-		fmt.Printf("🎯 找到更強的主鏈！將 Best 標籤從高度 %d 移動到 %d\n", currentHeight, actualBest.Height)
+	if actualBest != nil {
 		h.Node.Best = actualBest
 	}
-	h.Node.Unlock()
-	// ====================================================
 
-	// 1. 🔍 探長的第一步：先往回找祖先，試組裝主鏈 (不要急著宣佈畢業！)
+	// 組裝主鏈
 	newMainChain := []*blockchain.Block{}
-	cur := h.Node.Best // 👈 現在這個 cur 已經是最新的高度了！
+	cur := h.Node.Best
 	for cur != nil && cur.Block != nil {
 		newMainChain = append([]*blockchain.Block{cur.Block}, newMainChain...)
 		cur = cur.Parent
 	}
 
-	// ====================================================
-	// 🚨 探長的終極防線：檢查是否真的連回了創世區塊 (高度 0)
-	// ====================================================
+	// 檢查斷鏈
 	if len(newMainChain) == 0 || newMainChain[0].Height != 0 {
-		fmt.Println("⚠️ [Sync] 嚴重警告：發現斷鏈！拒絕提早畢業！")
-		return false // 👈 告訴外面：同步失敗！
+		fmt.Printf("⚠️ [Sync] 依然斷鏈！目前起點高度: %d\n",
+			func() uint64 {
+				if len(newMainChain) > 0 {
+					return newMainChain[0].Height
+				}
+				return 999
+			}())
+		h.Node.Unlock() // 🔓 失敗也要解鎖！
+		return false
 	}
-	// ====================================================
 
-	// 2. 🏆 通過防線！確定鏈是完整的！正式更新標誌位與主鏈
+	// 數據寫入正式狀態
 	h.Node.Chain = newMainChain
-	h.Node.BodiesSynced = true
 	h.Node.SyncState = node.SyncSynced
 	h.Node.IsSyncing = false
+	h.Node.DB.Put("meta", "best", []byte(h.Node.Best.Hash))
 
 	// ==========================================
-	// 💾 3. 終極存檔：把最新高度寫進資料庫，徹底治好失憶症！
+	// 🏆 探長關鍵點：手術做完了，先解鎖！
 	// ==========================================
-	if h.Node.Best != nil {
-		h.Node.DB.Put("meta", "best", []byte(h.Node.Best.Hash))
-		fmt.Printf("💾 已將最新鏈頭存檔至硬碟: 高度 %d\n", h.Node.Best.Height)
-	}
+	h.Node.Unlock() // 🔓 把鎖放開，讓 RebuildUTXO 可以自己拿鎖
 
-	// 4. 全局重建 UTXO (確保同步後的餘額與狀態絕對正確)
-	// 👈 因為前面的防線已經確保 newMainChain 是從 0 樓到頂樓的完整大樓，
-	// 所以這裡重建 UTXO 絕對不會發生找不到爸爸的慘劇！
-	h.Node.RebuildUTXO()
+	fmt.Println("💰 鏈條完整！啟動全局帳本重建...")
+	h.Node.RebuildUTXO() // 👈 這行會自己去處理它的鎖
 
-	if h.Node.Best != nil {
-		fmt.Printf("✅ 同步完成！當前高度: %d, Tip: %x\n", h.Node.Best.Height, h.Node.Best.Hash)
-
-	}
+	fmt.Printf("✅ 同步完成！高度: %d\n", h.Node.Best.Height)
 	return true
 }
 func (h *Handler) broadcastInvExcept(hash string, except *Peer) {

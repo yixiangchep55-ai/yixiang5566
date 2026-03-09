@@ -140,6 +140,22 @@ func NewNode(mode string, datadir string) *Node {
 		// ==========================================
 	}
 
+	// ==========================================================
+	// 🚨 探長關鍵加碼：把創世區塊請進記憶體點名簿！
+	// ==========================================================
+	genesis := blockchain.NewGenesisBlock(target)
+	gHash := hex.EncodeToString(genesis.Hash)
+
+	n.Blocks[gHash] = &BlockIndex{
+		Hash:       gHash,
+		Height:     0,
+		Block:      genesis,
+		CumWorkInt: big.NewInt(0),
+	}
+	// 順便把 n.Best 設為創世，這樣同步才有一個起點
+	n.Best = n.Blocks[gHash]
+	// ==========================================================
+
 	return n
 }
 
@@ -709,6 +725,8 @@ func (n *Node) PrintChainStatus() {
 
 // RebuildUTXO rebuilds the full UTXO set from the chain stored in n.Chain.
 func (n *Node) RebuildUTXO() error {
+	n.mu.Lock() // 🚨 這裡要鎖住，確保重建時沒人亂動帳本
+	defer n.mu.Unlock()
 	fmt.Println("🔄 [Full Rebuild] 啟動全帳本重建...")
 
 	// 0️⃣ 核心防護：確保主鏈視圖是最新的
