@@ -159,7 +159,7 @@ func (n *Node) connectBlock(block *blockchain.Block, parent *BlockIndex) bool {
 
 		// 🏆 Kali 救星：在切換主鏈後，徹底重新掃描帳本
 		fmt.Println("🔄 執行核彈級動態鏈重組 (Full UTXO Rebuild)...")
-		n.RebuildUTXO()
+		go n.RebuildUTXO()
 
 		chainSwitched = true
 	}
