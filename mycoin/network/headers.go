@@ -8,19 +8,19 @@ import (
 )
 
 type HeaderDTO struct {
-	Hash       string `json:"hash"`
-	PrevHash   string `json:"prev_hash"`
-	Height     uint64 `json:"height"`
-	Target     string `json:"target"`   // hex
-	CumWork    string `json:"cum_work"` // hex
-	Bits       uint32 `json:"bits"`
-	Timestamp  int64  `json:"timestamp"`
-	Nonce      uint64 `json:"nonce"`
-	MerkleRoot string `json:"merkle_root"`
+	Hash       string `json:"hash" mapstructure:"hash"`
+	PrevHash   string `json:"prev_hash" mapstructure:"prev_hash"`
+	Height     uint64 `json:"height" mapstructure:"height"`
+	Target     string `json:"target" mapstructure:"target"`     // hex string
+	CumWork    string `json:"cum_work" mapstructure:"cum_work"` // hex string
+	Bits       uint32 `json:"bits" mapstructure:"bits"`
+	Timestamp  int64  `json:"timestamp" mapstructure:"timestamp"`
+	Nonce      uint64 `json:"nonce" mapstructure:"nonce"`
+	MerkleRoot string `json:"merkle_root" mapstructure:"merkle_root"`
 }
 
 type HeadersPayload struct {
-	Headers []HeaderDTO `json:"headers"`
+	Headers []HeaderDTO `json:"headers" mapstructure:"headers"`
 }
 
 func HeaderDTOToBlock(h HeaderDTO) *blockchain.Block {

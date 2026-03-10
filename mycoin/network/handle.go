@@ -707,7 +707,7 @@ func (h *Handler) handleTx(peer *Peer, msg *Message) {
 	// AddTx 裡面已經有 n.mu.Lock() 保護，也有 VerifyTx 驗證，
 	// 它會安全地幫你呼叫 Mempool.AddTxRBF
 	// ==========================================
-	if ok := h.Node.AddTx(*tx); !ok {
+	if ok := h.Node.AddTx(*tx, peer.NodeID); !ok {
 		log.Println("❌ tx rejected by node:", tx.ID)
 		return
 	}
@@ -723,11 +723,29 @@ func (h *Handler) broadcastTxInv(txid string) {
 		return
 	}
 
+	// ==========================================
+	// 🌟 探長的智慧雷達：查出這筆交易是誰給我的
+	// ==========================================
+	// (如果你的 Mempool 的鎖 mu 是私有的，可以先暫時不用鎖讀取，
+	// 或是在 Mempool 寫一個 GetSource() 方法。這裡我們假設你能安全讀取)
+	var sourceNodeID uint64 = 0
+	if id, exists := h.Node.Mempool.Sources[txid]; exists {
+		sourceNodeID = id
+	}
+
 	h.Network.mu.Lock()
 	defer h.Network.mu.Unlock()
 
-	for _, p := range h.Network.Peers {
+	// 🌟 探長升級：把 map 的 key (nodeID) 拿出來比對
+	for nodeID, p := range h.Network.Peers {
 		if p.State == StateActive {
+
+			// 🛑 核心防禦：如果這個朋友就是這筆交易的發送者，跳過他不廣播！
+			if nodeID == sourceNodeID {
+				// fmt.Printf("🤫 [Smart Relay] 略過發送者 %d，不把交易 %s 傳回給他\n", nodeID, txid[:8])
+				continue
+			}
+
 			p.Send(Message{
 				Type: MsgInv,
 				Data: InvPayload{

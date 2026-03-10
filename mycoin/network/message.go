@@ -18,8 +18,8 @@ const (
 )
 
 type Message struct {
-	Type MsgType `json:"type"`
-	Data any     `json:"data"`
+	Type MsgType `json:"type" mapstructure:"type"`
+	Data any     `json:"data" mapstructure:"data"`
 }
 
 type VersionPayload struct {
@@ -30,20 +30,19 @@ type VersionPayload struct {
 }
 
 type InvPayload struct {
-	Type   string   `json:"type"`   // "block" | "tx"
-	Hashes []string `json:"hashes"` // 区块 hash 或 txid
+	Type   string   `json:"type" mapstructure:"type"`
+	Hashes []string `json:"hashes" mapstructure:"hashes"`
 }
 
-// getdata 消息：请求具体数据
 type GetDataPayload struct {
-	Type string `json:"type"` // "block" | "tx"
-	Hash string `json:"hash"`
+	Type string `json:"type" mapstructure:"type"`
+	Hash string `json:"hash" mapstructure:"hash"`
 }
 
 type TxPayload struct {
-	Tx []byte `json:"tx"`
+	Tx []byte `json:"tx" mapstructure:"tx"`
 }
 
 type AddrPayload struct {
-	Addrs []string `json:"addrs"`
+	Addrs []string `json:"addrs" mapstructure:"addrs"`
 }

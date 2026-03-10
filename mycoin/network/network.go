@@ -16,7 +16,7 @@ type Network struct {
 }
 
 type mempool struct {
-	AddrFrom string
+	AddrFrom uint64
 }
 
 func NewNetwork(handler *Handler) *Network {

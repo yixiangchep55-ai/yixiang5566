@@ -214,7 +214,7 @@ func (n *Node) Mine() {
 // --------------------
 // 添加交易到 Mempool (最終完全體：支援 RBF)
 // --------------------
-func (n *Node) AddTx(tx blockchain.Transaction) bool {
+func (n *Node) AddTx(tx blockchain.Transaction, fromNodeID uint64) bool {
 	// ==========================================
 	// 🕵️ 第一關：門口保全 (手續費檢查)
 	// ==========================================
@@ -248,7 +248,7 @@ func (n *Node) AddTx(tx blockchain.Transaction) bool {
 	}
 
 	fmt.Println("👉 [X-Ray] Mempool.HasDoubleSpend 通過，開始進入 AddTxRBF 黑洞...")
-	ok := n.Mempool.AddTxRBF(tx.ID, tx.Serialize(), n.UTXO)
+	ok := n.Mempool.AddTxRBF(tx.ID, tx.Serialize(), n.UTXO, fromNodeID)
 
 	fmt.Println("👉 [X-Ray] 成功逃出 AddTxRBF 黑洞！")
 	if !ok {
@@ -276,18 +276,27 @@ func (n *Node) appendBlock(block *blockchain.Block) {
 	}
 
 	// 3️⃣ 🔥 CPFP：mempool rebuild（关键）
-	old := n.Mempool.Txs
+	oldTxs := n.Mempool.Txs
+	oldSources := n.Mempool.Sources // 🌟 探長關鍵修正：把來源身分證名冊也備份起來！
+
 	n.Mempool.Reset()
 
-	for txid, txBytes := range old {
-		if ok := n.Mempool.AddTxRBF(txid, txBytes, n.UTXO); !ok {
+	for txid, txBytes := range oldTxs {
+		// 🕵️ 查出這筆交易當初是誰送來的 (如果找不到，預設當作是自己 n.NodeID)
+		fromID := n.NodeID
+		if id, exists := oldSources[txid]; exists {
+			fromID = id
+		}
+
+		// 🚀 補上第 4 個參數 fromID！
+		if ok := n.Mempool.AddTxRBF(txid, txBytes, n.UTXO, fromID); !ok {
 			log.Println("🧹 mempool drop after block:", txid)
 		}
 	}
+
 	hashHex := hex.EncodeToString(block.Hash)
 
 	n.DB.Put("blocks", hashHex, block.Serialize())
-
 	n.DB.Put("meta", "best", []byte(hashHex))
 }
 
@@ -939,7 +948,7 @@ func (n *Node) addTxsToMempool(txs []blockchain.Transaction) {
 		// Coinbase 交易無法復活 (因為它們只在特定高度有效，且憑空產生)
 		if !tx.IsCoinbase {
 			// 使用 AddTxRBF 嘗試加入，如果 Mempool 滿了或有衝突會自動處理
-			n.Mempool.AddTxRBF(tx.Hash(), tx.Serialize(), n.UTXO)
+			n.Mempool.AddTxRBF(tx.ID, tx.Serialize(), n.UTXO, n.NodeID)
 		}
 	}
 }

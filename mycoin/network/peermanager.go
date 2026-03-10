@@ -117,8 +117,15 @@ func (pm *PeerManager) Connect(addr string) {
 	// ⭐ 创建 peer 并启动 ReadLoop（onNewConn 会自动做）
 	pm.onNewConn(conn, true)
 
-	// ⭐ 持久化 peer 地址
-	pm.SavePeer(addr)
+	// 2. 🌟 探長修正：從 Active 名單中抓出剛剛建立好的物件
+	pm.mu.Lock()
+	p, ok := pm.Active[addr]
+	pm.mu.Unlock()
+
+	if ok {
+		// 現在 p 是 *Peer 型別了，這就不會報錯了！
+		pm.SavePeer(p)
+	}
 }
 
 func (pm *PeerManager) cleanup() {
@@ -258,14 +265,16 @@ func (pm *PeerManager) maintain() {
 	}
 }
 
-func (pm *PeerManager) SavePeer(addr string) {
+func (pm *PeerManager) SavePeer(p *Peer) { // 👈 改成傳入 *Peer 物件
 	info := PeerInfo{
-		Addr:     addr,
+		Addr:     p.Addr,
 		LastSeen: time.Now().Unix(),
+		NodeID:   p.NodeID, // 🌟 存入身分證字號
+		Height:   int(p.Height),
 	}
 
 	data, _ := json.Marshal(info)
-	pm.Network.Node.DB.Put("peerstore", addr, data)
+	pm.Network.Node.DB.Put("peerstore", p.Addr, data)
 }
 
 func (pm *PeerManager) LoadPeers() []string {

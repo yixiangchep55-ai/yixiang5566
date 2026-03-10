@@ -16,6 +16,7 @@ type Mempool struct {
 	Spent    map[string]string
 	Parents  map[string][]string // child → parents
 	Children map[string][]string // parent → children
+	Sources  map[string]uint64
 	MaxTx    int
 	DB       *database.BoltDB
 	Times    map[string]int64 // 👈 探長的打卡鐘：TxID -> Unix 時間戳
@@ -29,6 +30,7 @@ func (m *Mempool) Reset() {
 
 	// 🛡️ 探長加碼：清空的時候也要重新給一個新櫃子
 	m.Times = make(map[string]int64)
+	m.Sources = make(map[string]uint64)
 
 	m.Spent = make(map[string]string)
 	m.Parents = make(map[string][]string)
@@ -58,7 +60,7 @@ func (m *Mempool) Has(txid string) bool {
 	return ok
 }
 
-func (m *Mempool) AddTxRBF(txid string, txBytes []byte, utxo *blockchain.UTXOSet) bool {
+func (m *Mempool) AddTxRBF(txid string, txBytes []byte, utxo *blockchain.UTXOSet, fromNodeID uint64) bool {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
@@ -106,7 +108,7 @@ func (m *Mempool) AddTxRBF(txid string, txBytes []byte, utxo *blockchain.UTXOSet
 			lowestTxid[:8], float64(lowestFee)/100.0, txid[:8], float64(newFee)/100.0)
 	}
 
-	m.addTxUnsafe(txid, newTx, txBytes)
+	m.addTxUnsafe(txid, newTx, txBytes, fromNodeID)
 	return true
 }
 
@@ -141,6 +143,8 @@ func (m *Mempool) Clear() {
 
 	m.Txs = make(map[string][]byte)
 	m.Spent = make(map[string]string)
+	m.Times = make(map[string]int64)    // 👈 探長提醒：加上這行
+	m.Sources = make(map[string]uint64) // 👈 探長提醒：加上這行
 }
 
 func (m *Mempool) HasDoubleSpend(tx *blockchain.Transaction) bool {
@@ -174,6 +178,7 @@ func (m *Mempool) addTxUnsafe(
 	txid string,
 	tx *blockchain.Transaction,
 	txBytes []byte,
+	fromNodeID uint64, // 👈 已經加上了
 ) {
 	m.Txs[txid] = txBytes
 
@@ -182,37 +187,53 @@ func (m *Mempool) addTxUnsafe(
 	}
 
 	// ==========================================
-	// 🌟 探長的「永恆記憶」持久化打卡鐘
+	// 🌟 探長的「永恆記憶與身分溯源」持久化打卡鐘
 	// ==========================================
 	var enterTime int64
+	var finalFromID uint64 = fromNodeID // 預設使用這次傳入的 NodeID
 	isNewTransaction := true
 
-	// 1. 嘗試從資料庫的 "mempool_times" 抽屜裡找舊時間 (防重啟歸零)
+	// 1. 嘗試從資料庫找舊時間與舊身分 (防重啟歸零)
 	if m.DB != nil {
-		// 🚀 關鍵修正：只用一個變數接收！找不到的話 timeBytes 會是 nil 或長度為 0
+		// 找時間
 		timeBytes := m.DB.Get("mempool_times", txid)
 		if len(timeBytes) > 0 {
-			// 如果找到了，把存好的字串解碼回 int64
 			parsedTime, parseErr := strconv.ParseInt(string(timeBytes), 10, 64)
 			if parseErr == nil {
 				enterTime = parsedTime
-				isNewTransaction = false // 這是一筆重啟後載入的舊交易，不用打新卡！
+				isNewTransaction = false // 這是一筆重啟後載入的舊交易！
+			}
+		}
+
+		// 🕵️ 探長新增：如果是舊交易，我們得把當時是誰給的 NodeID 讀回來
+		if !isNewTransaction {
+			sourceBytes := m.DB.Get("mempool_sources", txid)
+			if len(sourceBytes) > 0 {
+				parsedID, parseErr := strconv.ParseUint(string(sourceBytes), 10, 64)
+				if parseErr == nil {
+					finalFromID = parsedID
+				}
 			}
 		}
 	}
 
-	// 2. 如果是剛收到的「全新交易」，打上現在的時間，並寫入資料庫保存！
+	// 2. 如果是「全新交易」，打上現在的時間、登記來源，並寫入資料庫保存！
 	if isNewTransaction {
 		enterTime = time.Now().Unix()
 		if m.DB != nil {
-			// 把時間數字變成字串，再變成 []byte 存進去
+			// 存時間
 			timeStr := strconv.FormatInt(enterTime, 10)
 			m.DB.Put("mempool_times", txid, []byte(timeStr))
+
+			// 🕵️ 探長新增：存來源身分證
+			idStr := strconv.FormatUint(finalFromID, 10)
+			m.DB.Put("mempool_sources", txid, []byte(idStr))
 		}
 	}
 
-	// 3. 把最終確定的時間寫入記憶體，讓前端抓取
+	// 3. 把最終確定的時間與來源寫入記憶體 map
 	m.Times[txid] = enterTime
+	m.Sources[txid] = finalFromID // 🕵️ 探長新增：寫入 Sources 給廣播系統用
 	// ==========================================
 
 	// 👇 以下完美保留你原本的 UTXO 與關聯邏輯
@@ -245,6 +266,7 @@ func (m *Mempool) removeTxUnsafe(txid string) {
 	}
 	delete(m.Txs, txid)
 	delete(m.Times, txid)
+	delete(m.Sources, txid)
 
 	if m.DB != nil {
 		m.DB.Delete("mempool", txid)

@@ -20,8 +20,10 @@ const (
 type PeerInfo struct {
 	Addr     string `json:"addr"`
 	LastSeen int64  `json:"last_seen"`
-	Version  int    `json:"version,omitempty"`
-	Height   int    `json:"height,omitempty"`
+	// 🌟 探長建議：加上 NodeID，讓檔案更完整
+	NodeID  uint64 `json:"node_id,omitempty"`
+	Version int    `json:"version,omitempty"`
+	Height  int    `json:"height,omitempty"`
 }
 
 type Peer struct {
