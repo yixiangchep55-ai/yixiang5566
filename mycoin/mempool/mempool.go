@@ -39,8 +39,12 @@ func (m *Mempool) Reset() {
 
 func NewMempool(maxTx int, db *database.BoltDB) *Mempool {
 	return &Mempool{
-		Times:    make(map[string]int64),
-		Txs:      make(map[string][]byte),
+		Times: make(map[string]int64),
+		Txs:   make(map[string][]byte),
+		// ==========================================
+		// 🌟 探長提醒：這個專屬身分證的櫃子終於買進來了！
+		// ==========================================
+		Sources:  make(map[string]uint64),
 		Spent:    make(map[string]string),
 		Parents:  make(map[string][]string),
 		Children: make(map[string][]string),
@@ -48,7 +52,6 @@ func NewMempool(maxTx int, db *database.BoltDB) *Mempool {
 		DB:       db,
 	}
 }
-
 func utxoKey(txid string, index int) string {
 	return fmt.Sprintf("%s_%d", txid, index)
 }

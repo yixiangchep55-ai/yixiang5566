@@ -197,10 +197,34 @@ func (n *Node) Mine() {
 			// 這能確保網路有足夠時間傳播，也解決了 CPU 佔用問題
 			fmt.Println("⏳ 挖礦冷卻中 (2秒)...")
 			time.Sleep(5 * time.Second)
-
 		} else {
-			// 被中斷 (收到別人的塊)，這裡不用 sleep，直接進入下一輪去搶塊
-			fmt.Println("🔄 [Node] 偵測到鏈更新...")
+			// 被中斷 (收到別人的塊)
+			fmt.Println("🔄 [Node] 偵測到鏈更新，準備重置礦工狀態...")
+
+			// ==========================================================
+			// 🌟 探長終極排水術：把 MinerResetChan 抽乾！
+			// ==========================================================
+			// 既然你上面有 GetResetChan() 做保護，我們直接呼叫它
+			ch := n.GetResetChan()
+
+			// 使用非阻塞迴圈抽乾頻道內積壓的所有 true/false 信號
+			drainedCount := 0
+			for {
+				select {
+				case <-ch:
+					drainedCount++
+					// 繼續抽下一個
+				default:
+					// 信箱終於抽乾了！
+					goto Drained
+				}
+			}
+		Drained:
+			// 如果你好奇抽掉了幾個，可以取消下面這行的註解來 debug
+			// fmt.Printf("🧹 已清空 %d 個積壓的中斷信號\n", drainedCount)
+
+			// 🛡️ 休息 0.5 秒，讓 Node 有時間把新區塊寫進資料庫
+			time.Sleep(500 * time.Millisecond)
 		}
 	}
 }
