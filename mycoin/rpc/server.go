@@ -210,7 +210,7 @@ func (s *RPCServer) handleRPC(w http.ResponseWriter, r *http.Request) {
 		txObj := network.DTOToTx(dto)
 
 		// 4️⃣ 驗證並加入 mempool (呼叫門口保全)
-		if ok := s.Node.AddTx(txObj); !ok {
+		if ok := s.Node.AddTx(txObj, s.Node.NodeID); !ok {
 			s.writeError(w, req.ID, "tx rejected: validation or mempool error")
 			return
 		}

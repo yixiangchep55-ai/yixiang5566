@@ -261,7 +261,7 @@ func (s *RPCServer) handleRPC(w http.ResponseWriter, r *http.Request) {
 
 		// 3️⃣ 節點驗證並加入 mempool (呼叫我們寫好的門口保全！)
 		// 注意這裡傳入的是 *tx (解指標取值)
-		if ok := s.Node.AddTx(*tx); !ok {
+		if ok := s.Node.AddTx(*tx, s.Node.NodeID); !ok {
 			s.writeError(w, req.ID, "tx rejected: validation or mempool error")
 			return
 		}
@@ -323,7 +323,7 @@ func (s *RPCServer) handleRPC(w http.ResponseWriter, r *http.Request) {
 		}
 
 		// 5️⃣ 塞入 Mempool
-		if ok := s.Node.AddTx(*tx); !ok {
+		if ok := s.Node.AddTx(*tx, s.Node.NodeID); !ok {
 			s.writeError(w, req.ID, "tx rejected: validation or mempool error")
 			return
 		}
