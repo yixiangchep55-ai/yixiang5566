@@ -606,11 +606,17 @@ func (h *Handler) broadcastInv(hash string) {
 // 工具：安全解码
 // ======================
 func decode(src any, dst any) error {
-	b, err := json.Marshal(src)
+	// 🌟 探長強烈建議：使用 mapstructure 並開啟 JSON 標籤支持
+	config := &mapstructure.DecoderConfig{
+		Metadata: nil,
+		Result:   dst,
+		TagName:  "json", // 讓它能讀取 `json:"..."` 標籤，確保雙向相容
+	}
+	decoder, err := mapstructure.NewDecoder(config)
 	if err != nil {
 		return err
 	}
-	return json.Unmarshal(b, dst)
+	return decoder.Decode(src)
 }
 
 func (h *Handler) handleGetAddr(peer *Peer, msg *Message) {
@@ -816,30 +822,23 @@ func (h *Handler) handleHeaders(peer *Peer, msg *Message) {
 	fmt.Printf("📥 Received %d headers from peer\n", headersCount)
 
 	// 1️⃣ 情況 A：對方完全沒資料 (常見於雙方都是高度 0，或重連後無新 Header)
+	// 1️⃣ 情況 A：對方完全沒資料
 	if headersCount == 0 {
 		fmt.Println("✅ Headers fully synced (Peer sent 0 headers)")
 		h.Node.HeadersSynced = true
 
-		// 🚨 探長暴力查帳
-		missingCount := 0
-		h.Node.Lock()
-		for _, bi := range h.Node.Blocks {
-			if bi.Block == nil && bi.Height > 0 {
-				missingCount++
-			}
-		}
-		h.Node.Unlock()
+		// 🚨 探長暴力查帳：不論是否正在同步，只要發現沒缺塊就去畢業
+		missingCount := h.countMissingBlocks()
 
 		if missingCount > 0 {
 			fmt.Printf("🔍 [防呆機制] 發現資料庫中仍有 %d 個缺塊，強制喚醒下載！\n", missingCount)
 			h.Node.IsSyncing = true
 			h.requestMissingBlockBodies(peer)
 		} else {
-			if !h.Node.IsSyncing {
-				fmt.Println("✨ 偵測到雙方高度一致且無缺塊，嘗試切換至『已同步』狀態...")
-				if h.finishSyncing() {
-					h.requestMempool(peer)
-				}
+			// 🌟 這裡取消 !h.Node.IsSyncing 的限制，讓它能順利跑完 finishSyncing
+			fmt.Println("✨ 檢查完畢，嘗試切換至『已同步』狀態...")
+			if h.finishSyncing() {
+				h.requestMempool(peer)
 			}
 		}
 		return
@@ -922,14 +921,16 @@ func (h *Handler) handleHeaders(peer *Peer, msg *Message) {
 	// 3️⃣ 情況 C：收到了新 Header，且數量很多，繼續請求下一批
 	if addedCount > 0 && headersCount >= 500 {
 		fmt.Println("🔄 Still more headers to download, requesting next batch...")
-		nextReq := GetHeadersPayload{
-			Locators: h.buildBlockLocator(),
-		}
-		data, _ := json.Marshal(nextReq)
-		peer.Send(Message{Type: MsgGetHeaders, Data: data})
+
+		// ✅ 探長修正：直接發送 Payload，不要在外面 Marshal！
+		peer.Send(Message{
+			Type: MsgGetHeaders,
+			Data: GetHeadersPayload{
+				Locators: h.buildBlockLocator(),
+			},
+		})
 		return
 	}
-
 	// 4️⃣ 情況 D：最後一批新 Header
 	if addedCount > 0 {
 		fmt.Printf("✅ Added %d new headers. Entering body sync phase...\n", addedCount)
@@ -1054,4 +1055,23 @@ func (h *Handler) BroadcastNewBlock(b *blockchain.Block) {
 
 func encode(v interface{}) ([]byte, error) {
 	return json.Marshal(v)
+}
+
+// 🕵️ 探長專屬查帳員：掃描整個區塊索引，計算還剩多少「半殘區塊」
+func (h *Handler) countMissingBlocks() int {
+	missingCount := 0
+
+	// 🔒 必須拿鎖！因為 Peer 可能正在從另一頭幫你塞資料
+	h.Node.Lock()
+	defer h.Node.Unlock()
+
+	for _, bi := range h.Node.Blocks {
+		// 如果只有 Index (標頭已收) 但 Block 欄位是 nil (實體未收)
+		// 且高度大於 0 (創世塊通常我們自己就有，不用算進去)
+		if bi.Block == nil && bi.Height > 0 {
+			missingCount++
+		}
+	}
+
+	return missingCount
 }
