@@ -23,10 +23,10 @@ type Message struct {
 }
 
 type VersionPayload struct {
-	Version int    `json:"version"`
-	Height  uint64 `json:"height"`
-	CumWork string `json:"cum_work"`
-	NodeID  uint64 `json:"node_id"`
+	Version int    `json:"version" mapstructure:"version"`
+	Height  uint64 `json:"height" mapstructure:"height"`
+	CumWork string `json:"cum_work" mapstructure:"cum_work"`
+	NodeID  uint64 `json:"node_id" mapstructure:"node_id"`
 }
 
 type InvPayload struct {
