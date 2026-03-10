@@ -245,6 +245,7 @@ func (h *Handler) handleInv(peer *Peer, msg *Message) {
 func (h *Handler) handleGetData(peer *Peer, msg *Message) {
 	var req GetDataPayload
 	if err := decode(msg.Data, &req); err != nil {
+		log.Println("❌ [Network] 解碼 GetData 失敗:", err)
 		return
 	}
 
@@ -744,9 +745,9 @@ func (h *Handler) BroadcastLocalTx(tx blockchain.Transaction) {
 func (h *Handler) handleGetHeaders(peer *Peer, msg *Message) {
 	var req GetHeadersPayload
 	if err := decode(msg.Data, &req); err != nil {
+		log.Println("❌ [Network] 解碼 GetHeaders 失敗 (請檢查結構體標籤):", err)
 		return
 	}
-
 	// fmt.Printf("🔍 [Debug] 收到 GetHeaders, Locator數: %d\n", len(req.Locators))
 
 	// ------------------------------------------------------------------
