@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log"
 	"math/big"
+	"math/rand"
 	"mycoin/blockchain"
 	"mycoin/database"
 	"mycoin/indexer"
@@ -23,35 +24,26 @@ import (
 // --------------------
 
 type Node struct {
-	Chain   []*blockchain.Block
-	Mempool *mempool.Mempool
-	UTXO    *blockchain.UTXOSet
-	mu      sync.Mutex
-
-	// ✔ BlockIndex 数据库（hashHex → block index）
-	Blocks map[string]*BlockIndex
-
-	// ✔ Complete block database（hashHex → complete block）
-	//BlockIndex map[string]*blockchain.Block
-
-	Best          *BlockIndex
-	MiningAddress string
-	Orphans       map[string][]*blockchain.Block
-
-	Mode   string
-	Target *big.Int
-	Reward int
-
+	Chain          []*blockchain.Block
+	Mempool        *mempool.Mempool
+	UTXO           *blockchain.UTXOSet
+	mu             sync.Mutex
+	Blocks         map[string]*BlockIndex
+	Best           *BlockIndex
+	MiningAddress  string
+	Orphans        map[string][]*blockchain.Block
+	Mode           string
+	Target         *big.Int
+	Reward         int
 	Miner          *miner.Miner
 	DB             *database.BoltDB
 	MinerResetChan chan bool
-
-	Broadcaster BlockBroadcaster
-
-	SyncState     SyncState
-	IsSyncing     bool
-	HeadersSynced bool
-	BodiesSynced  bool
+	Broadcaster    BlockBroadcaster
+	SyncState      SyncState
+	IsSyncing      bool
+	HeadersSynced  bool
+	BodiesSynced   bool
+	NodeID         uint64
 }
 
 type BlockBroadcaster interface {
@@ -119,6 +111,12 @@ func NewNode(mode string, datadir string) *Node {
 		16,
 	)
 
+	// ==========================================
+	// 🌟 探長加碼：在建立 Node 之前，先印製專屬身分證！
+	// ==========================================
+	myNodeID := rand.Uint64() // 抽出一張隨機的身分證號碼
+	// ==========================================
+
 	n := &Node{
 		Mode:    mode,
 		Chain:   []*blockchain.Block{},
@@ -138,6 +136,7 @@ func NewNode(mode string, datadir string) *Node {
 		IsSyncing: true,        // 👈 強制設定為同步中
 		SyncState: SyncHeaders, // 👈 設定初始狀態為「抓取標頭」
 		// ==========================================
+		NodeID: myNodeID,
 	}
 
 	// ==========================================================

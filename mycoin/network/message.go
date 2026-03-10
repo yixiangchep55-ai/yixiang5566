@@ -26,7 +26,7 @@ type VersionPayload struct {
 	Version int    `json:"version"`
 	Height  uint64 `json:"height"`
 	CumWork string `json:"cum_work"`
-	NodeID  string `json:"node_id"`
+	NodeID  uint64 `json:"node_id"`
 }
 
 type InvPayload struct {

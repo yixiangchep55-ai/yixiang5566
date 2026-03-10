@@ -196,6 +196,7 @@ func (pm *PeerManager) onNewConn(conn net.Conn, outbound bool) {
 				Version: 1,
 				Height:  pm.Network.Node.Best.Height,
 				CumWork: pm.Network.Node.Best.CumWork,
+				NodeID:  pm.Network.Node.NodeID, // 🌟 探長急救：千萬別忘記帶身分證出門！
 			},
 		})
 		log.Println("🚀 Sent version handshake to", peer.Addr)
@@ -243,13 +244,6 @@ func (pm *PeerManager) ensurePeers() {
 
 		// 🚫 不要连接自己的监听地址
 		if addr == pm.ListenOn {
-			continue
-		}
-
-		// 🚫 不要连接自己的 NodeID（本机对外广告地址）
-		if pm.Network != nil &&
-			pm.Network.Handler != nil &&
-			addr == pm.Network.Handler.LocalVersion.NodeID {
 			continue
 		}
 

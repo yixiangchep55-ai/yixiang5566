@@ -90,7 +90,6 @@ func main() {
 	nd.MiningAddress = minerWallet.Address
 
 	// 🔥🔥🔥 原本在這裡的「啟動礦工」移走了！ 🔥🔥🔥
-
 	// -------------------------------
 	// 4. 启动 P2P (先建立網路！)
 	// -------------------------------
@@ -103,12 +102,21 @@ func main() {
 
 	listenAddr := "0.0.0.0:9001"
 	publicIP := detectBestIP()
+
+	// ==========================================
+	// 🌟 探長終極修正：把大腦裡的「數字身分證」印到名片上！
+	// ==========================================
 	handler.LocalVersion = network.VersionPayload{
 		Version: 1,
-		Height:  uint64(len(nd.Chain)),
-		NodeID:  publicIP + ":9001",
+		// 💡 探長小提醒：如果你的 nd.Chain 已經棄用，建議改成 nd.Best.Height
+		Height:  nd.Best.Height,  // 或者維持你原本的 uint64(len(nd.Chain)) 也可以
+		CumWork: nd.Best.CumWork, // 順便把工作量也帶上
+		NodeID:  nd.NodeID,       // 🚀 關鍵：放入真正的 uint64 靈魂代碼！
 	}
-	fmt.Println("🔎 Node will advertise itself as:", handler.LocalVersion.NodeID)
+
+	// 升級一下超帥的啟動日誌！
+	fmt.Printf("🔎 Node will advertise itself with IP: %s:9001 and NodeID: %d\n", publicIP, handler.LocalVersion.NodeID)
+
 	pm := network.NewPeerManager(net, listenAddr, 16)
 	net.PeerManager = pm
 	pm.Start() // 啟動監聽

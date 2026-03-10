@@ -256,6 +256,7 @@ func getMempool(w http.ResponseWriter, r *http.Request) {
 }
 
 // 🔍 專門用來查詢「單筆交易詳情」的函數
+// 🔍 專門用來查詢「單筆交易詳情」的函數 (🌟 升級版：直接對接 Wallet RPC 拿完美收據)
 func getTransactionDetails(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Access-Control-Allow-Origin", "*")
 	w.Header().Set("Content-Type", "application/json")
@@ -269,45 +270,35 @@ func getTransactionDetails(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// 🕵️ 第一關：去 PostgreSQL 資料庫找 (已打包的交易)
-	var tx indexer.TxRecord
-	if err := indexer.DB.Where("tx_id = ?", txID).First(&tx).Error; err == nil {
-		// 算金額：計算這筆交易產生的所有 Output 總和
-		var totalAmount float64
-		indexer.DB.Model(&indexer.AddressLedger{}).
-			Where("tx_id = ? AND type = 'IN'", txID). // Type="IN" 代表資金流出到別人的地址 (Output)
-			Select("COALESCE(SUM(amount), 0)").Scan(&totalAmount)
+	// 🕵️ 探長新路線：直接去敲 8082 Wallet RPC 的門！
+	// 請求呼叫我們剛剛寫好的 getwallettransaction (或者你命名為 gettransaction 的那個)
+	rpcBody := fmt.Sprintf(`{"method": "getwallettransaction", "params": ["%s"], "id": 1}`, txID)
 
-		json.NewEncoder(w).Encode(map[string]interface{}{
-			"txid":        tx.TxID,
-			"blockHash":   tx.BlockHash,
-			"blockHeight": tx.BlockHeight,
-			"amount":      totalAmount / 100.0, // 還原成 YiCoin
-		})
+	resp, err := http.Post("http://localhost:8082/wallet", "application/json", strings.NewReader(rpcBody))
+	if err != nil {
+		fmt.Println("❌ [API] 無法連線到 Wallet RPC (8082):", err)
+		http.Error(w, `{"error": "無法連線到錢包伺服器"}`, http.StatusInternalServerError)
+		return
+	}
+	defer resp.Body.Close()
+
+	// 解析 Wallet RPC 回傳的 JSON
+	var rpcResp struct {
+		Result interface{} `json:"result"` // 這裡面就是我們那張完美的 TxSummary 收據！
+		Error  interface{} `json:"error"`
+	}
+
+	if err := json.NewDecoder(resp.Body).Decode(&rpcResp); err != nil {
+		http.Error(w, `{"error": "解析錢包回應失敗"}`, http.StatusInternalServerError)
 		return
 	}
 
-	// 🕵️ 第二關：資料庫沒有？去 Mempool 撈看看 (剛發送還沒打包的)
-	rpcBody := `{"method": "getmempool", "params": [], "id": 1}`
-	resp, err := http.Post("http://localhost:8081/rpc", "application/json", strings.NewReader(rpcBody))
-	if err == nil {
-		defer resp.Body.Close()
-		var rpcResp struct {
-			Result []map[string]interface{} `json:"result"`
-		}
-		json.NewDecoder(resp.Body).Decode(&rpcResp)
-
-		for _, mTx := range rpcResp.Result {
-			if mTx["txid"] == txID { // 在 Mempool 裡抓到了！
-				json.NewEncoder(w).Encode(map[string]interface{}{
-					"txid":   txID,
-					"amount": mTx["amount"], // Mempool 通常有帶金額
-				})
-				return
-			}
-		}
+	// 如果 8082 說找不到這筆交易
+	if rpcResp.Error != nil {
+		http.Error(w, fmt.Sprintf(`{"error": "%v"}`, rpcResp.Error), http.StatusNotFound)
+		return
 	}
 
-	// 💀 第三關：真的找不到
-	http.Error(w, `{"error": "找不到該筆交易"}`, http.StatusNotFound)
+	// 🌟 完美達陣：直接把那張漂亮的收據 (Result) 轉發給 Vue！
+	json.NewEncoder(w).Encode(rpcResp.Result)
 }

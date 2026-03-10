@@ -295,7 +295,7 @@ onMounted(() => {
             ✖️
           </button>
 
-          <h3 style="color: #f7931a; margin-top: 0">Transaction Details</h3>
+          <h3 style="color: #f7931a; margin-top: 0">🧾 Transaction Receipt</h3>
 
           <div
             style="
@@ -318,52 +318,101 @@ onMounted(() => {
                 style="font-family: monospace; color: #aaa; cursor: help"
                 :title="txData.txid"
               >
-                {{ txData.txid.substring(0, 16) }}...
+                {{ txData.txid ? txData.txid.substring(0, 16) : "Unknown" }}...
               </span>
               <button @click="copyToClipboard(txData.txid)" class="copy-btn">
                 📋
               </button>
             </p>
 
-            <p style="margin: 0 0 10px 0">
+            <p style="margin: 0 0 15px 0">
               <strong>Status:</strong>
-              <span v-if="txData.blockHash" style="color: #4ade80"
-                >✅ Confirmed</span
+              <span
+                v-if="txData.amount_sent !== undefined"
+                style="color: #4ade80"
+                >✅ Confirmed / Tracked</span
               >
-              <span v-else style="color: #f7931a">⏳ In Mempool</span>
+              <span v-else style="color: #f7931a">⏳ Processing...</span>
+            </p>
+
+            <hr
+              style="
+                border: 0;
+                border-top: 1px dashed rgba(255, 255, 255, 0.1);
+                margin: 15px 0;
+              "
+            />
+
+            <p style="margin: 0 0 8px 0; font-size: 0.9em">
+              <strong style="display: inline-block; width: 60px">From:</strong>
+              <span style="color: #aaa; font-family: monospace">{{
+                txData.sender || "Unknown"
+              }}</span>
+            </p>
+            <p style="margin: 0 0 15px 0; font-size: 0.9em">
+              <strong style="display: inline-block; width: 60px">To:</strong>
+              <span style="color: #aaa; font-family: monospace">{{
+                txData.receiver || "Multiple / Unknown"
+              }}</span>
             </p>
 
             <div
-              v-if="txData.blockHash"
-              style="display: flex; gap: 30px; margin-bottom: 10px"
-            >
-              <p style="margin: 0">
-                <strong>Block Height:</strong> {{ txData.blockHeight }}
-              </p>
-              <p style="margin: 0">
-                <strong>Block Hash:</strong>
-                <span
-                  style="font-family: monospace; font-size: 0.9em; cursor: help"
-                  :title="txData.blockHash"
-                >
-                  {{ txData.blockHash.substring(0, 10) }}...
-                </span>
-              </p>
-            </div>
-
-            <p
-              v-if="txData.amount !== undefined"
               style="
-                margin: 0;
-                padding-top: 10px;
-                border-top: 1px solid rgba(255, 255, 255, 0.1);
+                background: rgba(0, 0, 0, 0.3);
+                padding: 12px;
+                border-radius: 6px;
+                border-left: 4px solid #4ade80;
               "
             >
-              <strong>Total Value:</strong>
-              <span style="color: #4ade80; font-weight: bold; font-size: 1.1em">
-                {{ txData.amount }} YIC
-              </span>
-            </p>
+              <p
+                style="
+                  margin: 0 0 8px 0;
+                  display: flex;
+                  justify-content: space-between;
+                  align-items: center;
+                "
+              >
+                <strong>{{
+                  txData.is_coinbase ? "⛏️ Block Reward" : "💸 Amount Sent"
+                }}</strong>
+                <span
+                  style="color: #4ade80; font-weight: bold; font-size: 1.2em"
+                >
+                  {{
+                    txData.amount_sent ? txData.amount_sent.toFixed(2) : "0.00"
+                  }}
+                  YIC
+                </span>
+              </p>
+
+              <p
+                v-if="!txData.is_coinbase && txData.network_fee !== undefined"
+                style="
+                  margin: 0 0 8px 0;
+                  display: flex;
+                  justify-content: space-between;
+                  color: #aaa;
+                  font-size: 0.9em;
+                "
+              >
+                <span>Network Fee</span>
+                <span>{{ txData.network_fee.toFixed(2) }} YIC</span>
+              </p>
+
+              <p
+                v-if="txData.change > 0"
+                style="
+                  margin: 0;
+                  display: flex;
+                  justify-content: space-between;
+                  color: #888;
+                  font-size: 0.9em;
+                "
+              >
+                <span>Change Returned</span>
+                <span>{{ txData.change.toFixed(2) }} YIC</span>
+              </p>
+            </div>
           </div>
         </div>
 

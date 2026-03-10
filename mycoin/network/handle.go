@@ -8,7 +8,6 @@ import (
 	"math/big"
 	"mycoin/blockchain"
 	"mycoin/node"
-	"net"
 
 	"github.com/mitchellh/mapstructure"
 )
@@ -96,7 +95,12 @@ func (h *Handler) handleVersion(peer *Peer, msg *Message) {
 		return
 	}
 
-	// 如果我们还未发送 version（说明是 inbound 连接）
+	// ==========================================================
+	// 🚨 探長急救 1：抄下對方的身分證！(超級重要)
+	// ==========================================================
+	peer.NodeID = v.NodeID // 👈 沒抄這行，等一下 VerAck 保全會全把他們當成 0 號踢掉！
+
+	// 如果我们还未发送 version（说明是 inbound 连接，對方主動敲門）
 	if peer.State == StateInit {
 		peer.Send(Message{
 			Type: MsgVersion,
@@ -104,6 +108,7 @@ func (h *Handler) handleVersion(peer *Peer, msg *Message) {
 				Version: 1,
 				Height:  h.Node.Best.Height,
 				CumWork: h.Node.Best.CumWork,
+				NodeID:  h.Node.NodeID, // 👈 🚨 探長急救 2：遞名片時，記得填上自己的身分證！
 			},
 		})
 		peer.State = StateVersionSent
@@ -137,50 +142,42 @@ func (h *Handler) handleVersion(peer *Peer, msg *Message) {
 func (h *Handler) handleVerAck(peer *Peer, msg *Message) {
 	if peer.State >= StateVersionRecv {
 
-		// 1. 提取 IP
-		host, _, _ := net.SplitHostPort(peer.Addr)
-
 		h.Network.mu.Lock() // 🔒 上鎖
 
-		// 2. 尋找是否有「舊的」相同 IP 連線
-		var oldPeer *Peer
-		for addr, existingPeer := range h.Network.Peers {
-			// 跳過自己
-			if addr == peer.Addr {
-				continue
-			}
-
-			exHost, _, _ := net.SplitHostPort(existingPeer.Addr)
-			if exHost == host {
-				oldPeer = existingPeer // 找到了舊連線！
-				break
-			}
+		// =================================================================
+		// 🛑 企業級防禦 1：這是不是我自己？(防自我連線)
+		// =================================================================
+		// 假設你的 NodeID 存在 h.Network.Node.NodeID 裡面
+		if peer.NodeID == h.Network.Node.NodeID {
+			fmt.Println("❌ 警告：偵測到自我連線 (NodeID 相同)，拒絕加入名單！")
+			peer.Close()
+			h.Network.mu.Unlock()
+			return
 		}
 
-		// 🔥🔥🔥 [關鍵修改]：採取「喜新厭舊」策略 🔥🔥🔥
-		if oldPeer != nil {
-			log.Printf("🔄 檢測到來自 %s 的重連 (IP 已存在)，正在清理舊連線 %s...\n", host, oldPeer.Addr)
-
-			// 1. 從 Map 中移除舊的 Key
-			delete(h.Network.Peers, oldPeer.Addr)
-
-			// 2. 關閉舊連線的 Socket (這會觸發舊連線的 disconnect 清理邏輯)
-			// 注意：我們在 Lock 裡面做 delete 是安全的，Close 是異步的
-			go oldPeer.Close()
-
-			// 3. ⚠️ 重點：我們不 return！讓程式繼續往下跑，去註冊這個新的連線
+		// =================================================================
+		// 🛑 企業級防禦 2：這個身分證是不是已經在裡面了？(防重複連線)
+		// =================================================================
+		if existingPeer, exists := h.Network.Peers[peer.NodeID]; exists {
+			fmt.Printf("🔄 偵測到重複的節點 NodeID: %d，保留舊連線 %s，斷開新連線...\n", peer.NodeID, existingPeer.Addr)
+			peer.Close()
+			h.Network.mu.Unlock()
+			return
 		}
 
-		// --- 3. 註冊新連線 (原本的邏輯) ---
+		// =================================================================
+		// ✅ 3. 註冊新連線 (🌟 探長升級：現在用 NodeID 當鑰匙了！)
+		// =================================================================
 		peer.State = StateActive
-		log.Println("✅ peer active:", peer.Addr)
+		log.Printf("✅ peer active: %s (NodeID: %d)\n", peer.Addr, peer.NodeID)
 
-		h.Network.Peers[peer.Addr] = peer
+		// 🔥 關鍵修改：用 NodeID 存進 Map！
+		h.Network.Peers[peer.NodeID] = peer
 		currentCount := len(h.Network.Peers)
 
 		h.Network.mu.Unlock() // 🔓 解鎖
 
-		fmt.Printf("🔒 [Network] 已將 %s 強制加入廣播名單，目前連線數: %d\n", peer.Addr, currentCount)
+		fmt.Printf("🔒 [Network] 已將 NodeID %d 強制加入廣播名單，目前連線數: %d\n", peer.NodeID, currentCount)
 
 		// 🌐 地址發現
 		peer.Send(Message{Type: MsgGetAddr})
@@ -646,7 +643,9 @@ func (h *Handler) handleAddr(peer *Peer, msg *Message) {
 	addedCount := 0
 	for _, addr := range addrs {
 		// 1. 基礎過濾：不連自己
-		if addr == pm.ListenOn || addr == h.LocalVersion.NodeID {
+		// 1. 基礎過濾：不連自己 (只檢查 IP 就好，身分證等連上了再給大門保全去查)
+		// 🚨 探長修正：把 addr == h.LocalVersion.NodeID 刪掉！
+		if addr == pm.ListenOn {
 			continue
 		}
 
@@ -815,34 +814,40 @@ func (h *Handler) handleHeaders(peer *Peer, msg *Message) {
 	headersCount := len(payload.Headers)
 	fmt.Printf("📥 Received %d headers from peer\n", headersCount)
 
-	// 1️⃣ 情況 A：對方完全沒資料 (常見於雙方都是高度 0)
+	// 1️⃣ 情況 A：對方完全沒資料 (常見於雙方都是高度 0，或重連後無新 Header)
 	if headersCount == 0 {
 		fmt.Println("✅ Headers fully synced (Peer sent 0 headers)")
 		h.Node.HeadersSynced = true
 
-		// 🔥🔥🔥 [關鍵修改]：主動判斷是否該畢業了 🔥🔥🔥
-		// 如果目前狀態不是「已同步」，且檢查後發現我們並不缺塊
-		// 那就代表我們已經跟對方一樣新了，必須強制結束同步！
-		// 🔥🔥🔥 [探長升級版]：主動判斷是否該畢業了 🔥🔥🔥
-		if h.Node.SyncState != node.SyncSynced {
-			if !h.Node.HasMissingBodies() {
-				fmt.Println("✨ 偵測到雙方高度一致且無缺塊，嘗試切換至『已同步』狀態...")
+		// 🚨 探長暴力查帳
+		missingCount := 0
+		h.Node.Lock()
+		for _, bi := range h.Node.Blocks {
+			if bi.Block == nil && bi.Height > 0 {
+				missingCount++
+			}
+		}
+		h.Node.Unlock()
 
-				// 🚨 這裡改用 if 判斷！只有真正通過「祖宗十八代核實」才准拿 Mempool
+		if missingCount > 0 {
+			fmt.Printf("🔍 [防呆機制] 發現資料庫中仍有 %d 個缺塊，強制喚醒下載！\n", missingCount)
+			h.Node.IsSyncing = true
+			h.requestMissingBlockBodies(peer)
+		} else {
+			if !h.Node.IsSyncing {
+				fmt.Println("✨ 偵測到雙方高度一致且無缺塊，嘗試切換至『已同步』狀態...")
 				if h.finishSyncing() {
 					h.requestMempool(peer)
-				} else {
-					fmt.Println("🕵️ [Debug] 發現鏈條不完整，拒絕領取 Mempool 交易。")
 				}
-
-			} else {
-				h.requestMissingBlockBodies(peer)
 			}
 		}
 		return
 	}
-	addedCount := 0
 
+	// =================================================================
+	// 🚨 嫌疑犯就在這！這就是節點的「胃」！絕對不能刪掉！
+	// =================================================================
+	addedCount := 0
 	for _, hdr := range payload.Headers {
 		// 如果資料庫已經有這個塊了，直接跳過
 		if _, ok := h.Node.Blocks[hdr.Hash]; ok {
@@ -880,24 +885,35 @@ func (h *Handler) handleHeaders(peer *Peer, msg *Message) {
 	}
 
 	// =================================================================
-	// 🔥🔥🔥 [關鍵修正邏輯] 🔥🔥🔥
+	// 🔥🔥🔥 [探長終極暴力修正] 🔥🔥🔥
 	// =================================================================
 
-	// 2️⃣ 情況 B：收到了 Header，但「全部都是重複的」
+	// 2️⃣ 情況 B：收到了 Header，但「全部都是重複的」 (addedCount == 0)
 	if addedCount == 0 && headersCount > 0 {
 		fmt.Println("✅ All received headers were already known. Headers sync complete.")
 		h.Node.HeadersSynced = true
 
-		if !h.Node.HasMissingBodies() {
-			fmt.Println("✨ 資料已齊全，嘗試切換至已同步狀態...")
-
-			// 🚨 同樣這裡也要改！
-			if h.finishSyncing() {
-				h.requestMempool(peer) // 建議這裡也順便要一下 Mempool
+		// 🚨 探長暴力查帳
+		missingCount := 0
+		h.Node.Lock()
+		for _, bi := range h.Node.Blocks {
+			if bi.Block == nil && bi.Height > 0 {
+				missingCount++
 			}
+		}
+		h.Node.Unlock()
 
-		} else {
+		if missingCount > 0 {
+			fmt.Printf("🔍 [暴力防呆] 抓到了！資料庫中仍有 %d 個缺塊，強制喚醒下載！\n", missingCount)
+			h.Node.IsSyncing = true
 			h.requestMissingBlockBodies(peer)
+		} else {
+			if !h.Node.IsSyncing {
+				fmt.Println("✨ 資料已齊全，嘗試切換至已同步狀態...")
+				if h.finishSyncing() {
+					h.requestMempool(peer)
+				}
+			}
 		}
 		return
 	}
@@ -1015,16 +1031,17 @@ func (h *Handler) BroadcastNewBlock(b *blockchain.Block) {
 	defer h.Network.mu.Unlock()
 
 	activeCount := 0
-	for _, p := range h.Network.Peers {
-		// 🔥 除錯：印出所有 Peer 的狀態
-		fmt.Printf("   -> 檢查 Peer %s (狀態: %d)\n", p.Addr, p.State)
+	// 🌟 探長升級：把底線 '_' 換成 'nodeID'，把這張身分證拿出來秀！
+	for nodeID, p := range h.Network.Peers {
+		// 🔥 除錯：印出所有 Peer 的狀態 (加上超帥的 NodeID)
+		fmt.Printf("   -> 檢查 Peer %s [身分證: %d] (狀態: %d)\n", p.Addr, nodeID, p.State)
 
 		if p.State == StateActive {
 			p.Send(Message{
 				Type: MsgBlock,
 				Data: dto,
 			})
-			fmt.Printf("   -> ✅ 已發送 MsgBlock 給 %s\n", p.Addr)
+			fmt.Printf("   -> ✅ 已發送 MsgBlock 給 %s [身分證: %d]\n", p.Addr, nodeID)
 			activeCount++
 		}
 	}

@@ -32,6 +32,7 @@ type Peer struct {
 	CumWork  string
 	LastSeen int64
 	Outbound bool
+	NodeID   uint64
 
 	mu  sync.Mutex
 	enc *json.Encoder

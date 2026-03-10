@@ -11,6 +11,16 @@ import (
 	"net/http"
 )
 
+type TxSummary struct {
+	TxID       string  `json:"txid"`
+	Sender     string  `json:"sender"`
+	Receiver   string  `json:"receiver"`
+	AmountSent float64 `json:"amount_sent"`
+	NetworkFee float64 `json:"network_fee"`
+	Change     float64 `json:"change"`
+	IsCoinbase bool    `json:"is_coinbase"`
+}
+
 // JSON-RPC
 type RPCRequest struct {
 	Method string        `json:"method"`
@@ -102,6 +112,55 @@ func (s *RPCServer) handleRPC(w http.ResponseWriter, r *http.Request) {
 		}
 
 		s.writeResult(w, req.ID, float64(total)/100.0)
+
+	case "getwallettransaction":
+		if len(req.Params) != 1 {
+			s.writeError(w, req.ID, "usage: gettransaction <txid>")
+			return
+		}
+
+		txID, ok := req.Params[0].(string)
+		if !ok {
+			s.writeError(w, req.ID, "invalid txid")
+			return
+		}
+
+		// 1. 找這筆交易 (先在 Mempool 找，找不到再去 Chain 找)
+		var targetTx *blockchain.Transaction
+		s.Node.Lock()
+
+		// 搜 Mempool
+		for _, txBytes := range s.Node.Mempool.Txs {
+			var mTx blockchain.Transaction
+			if err := json.Unmarshal(txBytes, &mTx); err == nil && mTx.ID == txID {
+				targetTx = &mTx
+				break
+			}
+		}
+
+		// 搜 Chain
+		if targetTx == nil {
+			for _, block := range s.Node.Chain {
+				for _, bTx := range block.Transactions {
+					if bTx.ID == txID {
+						targetTx = &bTx
+						break
+					}
+				}
+			}
+		}
+		s.Node.Unlock()
+
+		if targetTx == nil {
+			s.writeError(w, req.ID, "transaction not found")
+			return
+		}
+
+		// 2. 🕵️ 呼叫翻譯官！
+		summary := s.ParseToHumanSummary(*targetTx)
+
+		// 3. 回傳漂亮的收據
+		s.writeResult(w, req.ID, summary)
 
 	case "listutxos":
 		if len(req.Params) != 1 {
@@ -293,4 +352,80 @@ func (s *RPCServer) writeError(w http.ResponseWriter, id interface{}, msg string
 	out, _ := json.Marshal(resp)
 	w.Header().Set("Content-Type", "application/json")
 	w.Write(out)
+}
+
+// ParseToHumanSummary RPC專屬的超級翻譯官！
+func (s *RPCServer) ParseToHumanSummary(tx blockchain.Transaction) TxSummary {
+	summary := TxSummary{
+		TxID:       tx.ID,
+		IsCoinbase: tx.IsCoinbase,
+	}
+
+	// 1️⃣ 系統發錢 (Coinbase) 模式
+	if tx.IsCoinbase {
+		summary.Sender = "System Reward (Coinbase)"
+		if len(tx.Outputs) > 0 {
+			summary.Receiver = tx.Outputs[0].To
+			summary.AmountSent = float64(tx.Outputs[0].Amount) / 100.0
+		}
+		return summary
+	}
+
+	// 2️⃣ 一般交易算帳模式
+	var totalInputAmount int = 0
+	var totalOutputAmount int = 0
+	var actualSent int = 0
+	var changeAmount int = 0
+
+	// 【抓出輸入金額】
+	// ⚠️ 探長提醒：這裡我們需要去區塊鏈找上一筆交易。
+	// 這裡示範暴力掃描 Chain (如果你的系統有更快找 Tx 的方法，可以替換)
+	for _, in := range tx.Inputs {
+		// 去找出 in.TxID 這筆交易的原本金額
+		var prevTx *blockchain.Transaction
+
+		// 簡單的尋找邏輯 (建議未來可以在 DB 加索引)
+		s.Node.Lock()
+		for _, block := range s.Node.Chain {
+			for _, bTx := range block.Transactions {
+				if bTx.ID == in.TxID {
+					prevTx = &bTx
+					break
+				}
+			}
+		}
+		s.Node.Unlock()
+
+		if prevTx != nil && in.Index < len(prevTx.Outputs) {
+			prevOut := prevTx.Outputs[in.Index]
+			totalInputAmount += prevOut.Amount
+			summary.Sender = prevOut.To // 把錢的來源當作發送者
+		}
+	}
+
+	// 【抓出輸出金額與找零】
+	for _, out := range tx.Outputs {
+		totalOutputAmount += out.Amount
+
+		// 🕵️ 探長斷案：這筆錢是不是回到我的錢包？
+		if out.To == s.Wallet.Address {
+			changeAmount += out.Amount // 是我的，這是找零！
+		} else {
+			actualSent += out.Amount  // 不是我的，這是真實轉出！
+			summary.Receiver = out.To // 紀錄收款人
+		}
+	}
+
+	// 3️⃣ 結算數字並轉換為小數點格式 (除以 100.0)
+	summary.AmountSent = float64(actualSent) / 100.0
+	summary.Change = float64(changeAmount) / 100.0
+
+	fee := totalInputAmount - totalOutputAmount
+	if fee > 0 {
+		summary.NetworkFee = float64(fee) / 100.0
+	} else {
+		summary.NetworkFee = 0
+	}
+
+	return summary
 }
