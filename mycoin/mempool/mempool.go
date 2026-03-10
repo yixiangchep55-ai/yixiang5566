@@ -305,3 +305,13 @@ func (m *Mempool) Remove(txid string) {
 
 	m.removeTxUnsafe(txid)
 }
+
+func (m *Mempool) GetSource(txid string) uint64 {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	if id, exists := m.Sources[txid]; exists {
+		return id
+	}
+	return 0 // 如果找不到或是本地發起的，回傳 0
+}

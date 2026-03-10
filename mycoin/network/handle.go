@@ -725,41 +725,50 @@ func (h *Handler) handleTx(peer *Peer, msg *Message) {
 }
 
 func (h *Handler) broadcastTxInv(txid string) {
+	// 🛡️ 防禦 1：如果自己還沒同步完，不廣播以免造成網路混亂
 	if h.Node.SyncState != node.SyncSynced {
 		return
 	}
 
-	// ==========================================
-	// 🌟 探長的智慧雷達：查出這筆交易是誰給我的
-	// ==========================================
-	// (如果你的 Mempool 的鎖 mu 是私有的，可以先暫時不用鎖讀取，
-	// 或是在 Mempool 寫一個 GetSource() 方法。這裡我們假設你能安全讀取)
-	var sourceNodeID uint64 = 0
-	if id, exists := h.Node.Mempool.Sources[txid]; exists {
-		sourceNodeID = id
-	}
+	// 🕵️ 探長修復：使用剛才在 mempool 裡寫好的公開方法，避開私有 mu 的報錯
+	sourceNodeID := h.Node.Mempool.GetSource(txid)
 
 	h.Network.mu.Lock()
 	defer h.Network.mu.Unlock()
 
-	// 🌟 探長升級：把 map 的 key (nodeID) 拿出來比對
+	// ==========================================
+	// 🌟 核心信件內容：這段絕對要保留！
+	// ==========================================
+	invMsg := Message{
+		Type: MsgInv, // 這是你的訊息類型標籤
+		Data: InvPayload{ // 這是你的貨櫃結構
+			Type:   "tx",
+			Hashes: []string{txid}, // 使用陣列格式，這符合區塊鏈 P2P 慣例
+		},
+	}
+
+	count := 0
 	for nodeID, p := range h.Network.Peers {
+		// 只有對處於啟動狀態的鄰居發送
 		if p.State == StateActive {
 
-			// 🛑 核心防禦：如果這個朋友就是這筆交易的發送者，跳過他不廣播！
-			if nodeID == sourceNodeID {
-				// fmt.Printf("🤫 [Smart Relay] 略過發送者 %d，不把交易 %s 傳回給他\n", nodeID, txid[:8])
+			// 🛑 【智慧中轉防禦 (Smart Relay)】
+			// 如果 nodeID 等於 sourceNodeID，代表這筆交易是「他」給我的。
+			// 探長教你：絕對不要把別人的東西再傳回去給本人，那叫浪費頻寬！
+			if sourceNodeID != 0 && nodeID == sourceNodeID {
+				// fmt.Printf("🤫 [Smart Relay] 略過發送者 %d，不重複發送\n", nodeID)
 				continue
 			}
 
-			p.Send(Message{
-				Type: MsgInv,
-				Data: InvPayload{
-					Type:   "tx",
-					Hashes: []string{txid},
-				},
-			})
+			// 🚀 正式寄出信件
+			p.Send(invMsg)
+			count++
 		}
+	}
+
+	// 只有真的發出去才印日誌，保持畫面乾淨
+	if count > 0 {
+		fmt.Printf("📢 [P2P] 已向 %d 個鄰居廣播交易清單 (Inv): %s\n", count, txid[:8])
 	}
 }
 
