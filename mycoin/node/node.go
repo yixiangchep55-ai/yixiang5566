@@ -1005,8 +1005,9 @@ func (n *Node) RemoveFromMempool(txID string) {
 
 // EvaluateSyncStatus 根據鄰居的工作量，動態決定自己是否需要同步
 func (n *Node) EvaluateSyncStatus(peerHeight uint64, peerWork *big.Int) {
-	n.Lock()
-	defer n.Unlock()
+	// 🌟 探長提醒：記得確認你的鎖是 n.Lock() 還是 n.mu.Lock()
+	n.mu.Lock()
+	defer n.mu.Unlock()
 
 	// 確保安全獲取本地工作量
 	localWork := big.NewInt(0)
@@ -1022,9 +1023,18 @@ func (n *Node) EvaluateSyncStatus(peerHeight uint64, peerWork *big.Int) {
 	if peerWork != nil && peerWork.Cmp(localWork) > 0 {
 		n.IsSyncing = true
 		n.SyncState = SyncHeaders // (記得前綴)
-		fmt.Printf("🛰️ [Network] 鄰居工作量 (%s) 大於本地 (%s)，進入同步模式...\n",
-			peerWork.Text(16)[:8]+"...", localWork.Text(16)[:8]+"...")
-		// 印出前8碼就好，不然太長
+
+		// 🛡️ 安全截斷字串防護罩
+		pStr := peerWork.Text(16)
+		lStr := localWork.Text(16)
+		if len(pStr) > 8 {
+			pStr = pStr[:8] + "..."
+		}
+		if len(lStr) > 8 {
+			lStr = lStr[:8] + "..."
+		}
+
+		fmt.Printf("🛰️ [Network] 鄰居工作量 (%s) 大於本地 (%s)，進入同步模式...\n", pStr, lStr)
 	} else {
 		n.IsSyncing = false
 		n.SyncState = SyncSynced
