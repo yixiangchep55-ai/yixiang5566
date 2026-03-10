@@ -156,9 +156,15 @@ func (h *Handler) handleVerAck(peer *Peer, msg *Message) {
 		}
 
 		// =================================================================
-		// 🛑 企業級防禦 2：這個身分證是不是已經在裡面了？(防重複連線)
+		// 🛑 企業級防禦 2：修復自己踢自己的 Bug！
 		// =================================================================
 		if existingPeer, exists := h.Network.Peers[peer.NodeID]; exists {
+			// 🌟 探長關鍵修復：如果是同一個連線物件 (對方可能重發了 Ack)，直接忽略，別關掉它！
+			if existingPeer == peer {
+				h.Network.mu.Unlock()
+				return
+			}
+
 			fmt.Printf("🔄 偵測到重複的節點 NodeID: %d，保留舊連線 %s，斷開新連線...\n", peer.NodeID, existingPeer.Addr)
 			peer.Close()
 			h.Network.mu.Unlock()

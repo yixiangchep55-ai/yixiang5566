@@ -50,10 +50,17 @@ func NewPeer(conn net.Conn) *Peer {
 	}
 }
 
-func (p *Peer) Send(msg Message) error {
+func (p *Peer) Send(msg Message) {
+	// 🌟 探長交通管制：加上這把鎖，確保打招呼和發送區塊不會撞車！
 	p.mu.Lock()
 	defer p.mu.Unlock()
-	return p.enc.Encode(msg)
+
+	if p.Conn != nil {
+		err := p.enc.Encode(msg)
+		if err != nil {
+			log.Printf("⚠️ [Network] 發送訊息失敗給 %s: %v\n", p.Addr, err)
+		}
+	}
 }
 
 func (p *Peer) ReadLoop(onMessage func(*Peer, *Message)) {
