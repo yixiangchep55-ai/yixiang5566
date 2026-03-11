@@ -725,50 +725,48 @@ func (h *Handler) handleTx(peer *Peer, msg *Message) {
 }
 
 func (h *Handler) broadcastTxInv(txid string) {
-	// 🛡️ 防禦 1：如果自己還沒同步完，不廣播以免造成網路混亂
+	// 🌟 顯影劑 1：確認有沒有進來
+	fmt.Println("🕵️ [Debug] 進入 broadcastTxInv，準備廣播交易:", txid[:8])
+
+	// 🛡️ 防禦 1：如果自己還沒同步完，不廣播
 	if h.Node.SyncState != node.SyncSynced {
+		// 🌟 顯影劑 2：抓到攔截者！
+		fmt.Printf("🚫 [Debug] 廣播被攔截！當前 SyncState 是 %v，不是 Synced!\n", h.Node.SyncState)
 		return
 	}
 
-	// 🕵️ 探長修復：使用剛才在 mempool 裡寫好的公開方法，避開私有 mu 的報錯
 	sourceNodeID := h.Node.Mempool.GetSource(txid)
 
 	h.Network.mu.Lock()
 	defer h.Network.mu.Unlock()
 
-	// ==========================================
-	// 🌟 核心信件內容：這段絕對要保留！
-	// ==========================================
+	// 🌟 顯影劑 3：看看有幾個鄰居
+	fmt.Printf("🕵️ [Debug] 網路中共有 %d 個鄰居，準備逐一檢查...\n", len(h.Network.Peers))
+
 	invMsg := Message{
-		Type: MsgInv, // 這是你的訊息類型標籤
-		Data: InvPayload{ // 這是你的貨櫃結構
+		Type: MsgInv,
+		Data: InvPayload{
 			Type:   "tx",
-			Hashes: []string{txid}, // 使用陣列格式，這符合區塊鏈 P2P 慣例
+			Hashes: []string{txid},
 		},
 	}
 
 	count := 0
 	for nodeID, p := range h.Network.Peers {
-		// 只有對處於啟動狀態的鄰居發送
 		if p.State == StateActive {
-
-			// 🛑 【智慧中轉防禦 (Smart Relay)】
-			// 如果 nodeID 等於 sourceNodeID，代表這筆交易是「他」給我的。
-			// 探長教你：絕對不要把別人的東西再傳回去給本人，那叫浪費頻寬！
 			if sourceNodeID != 0 && nodeID == sourceNodeID {
-				// fmt.Printf("🤫 [Smart Relay] 略過發送者 %d，不重複發送\n", nodeID)
 				continue
 			}
-
-			// 🚀 正式寄出信件
 			p.Send(invMsg)
 			count++
 		}
 	}
 
-	// 只有真的發出去才印日誌，保持畫面乾淨
 	if count > 0 {
 		fmt.Printf("📢 [P2P] 已向 %d 個鄰居廣播交易清單 (Inv): %s\n", count, txid[:8])
+	} else {
+		// 🌟 顯影劑 4：鄰居都不理我？
+		fmt.Println("⚠️ [Debug] 廣播跑完了，但是 count 是 0！沒有符合條件的鄰居。")
 	}
 }
 
@@ -1107,4 +1105,8 @@ func (h *Handler) countMissingBlocks() int {
 	}
 
 	return missingCount
+}
+
+func (h *Handler) BroadcastTransaction(txid string) {
+	h.broadcastTxInv(txid)
 }

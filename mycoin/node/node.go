@@ -48,6 +48,7 @@ type Node struct {
 
 type BlockBroadcaster interface {
 	BroadcastNewBlock(b *blockchain.Block)
+	BroadcastTransaction(txid string)
 }
 
 func (n *Node) HasBlock(hash []byte) bool {
@@ -281,7 +282,9 @@ func (n *Node) AddTx(tx blockchain.Transaction, fromNodeID uint64) bool {
 	}
 
 	fmt.Printf("📥 ✅ [X-Ray] 交易 %s 成功進入 Mempool，等待打包\n", tx.ID)
+
 	return true
+
 }
 
 // --------------------
