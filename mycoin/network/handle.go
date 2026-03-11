@@ -891,39 +891,33 @@ func (h *Handler) handleHeaders(peer *Peer, msg *Message) {
 	}
 
 	headersCount := len(payload.Headers)
-	fmt.Printf("📥 Received %d headers from peer\n", headersCount)
+	fmt.Printf("📥 [Sync] 收到 %d 個 Headers 來自 %s\n", headersCount, peer.Addr)
 
-	// 1️⃣ 情況 A：對方完全沒資料 (常見於雙方都是高度 0，或重連後無新 Header)
-	// 1️⃣ 情況 A：對方完全沒資料
+	// 1️⃣ 情況 A：對方沒有新資料 (完全同步，或我們比對方長)
 	if headersCount == 0 {
-		fmt.Println("✅ Headers fully synced (Peer sent 0 headers)")
+		fmt.Println("✅ [Sync] 對方已無新 Headers。")
 		h.Node.HeadersSynced = true
 
-		// 🚨 探長暴力查帳：不論是否正在同步，只要發現沒缺塊就去畢業
-		missingCount := h.countMissingBlocks()
-
-		if missingCount > 0 {
-			fmt.Printf("🔍 [防呆機制] 發現資料庫中仍有 %d 個缺塊，強制喚醒下載！\n", missingCount)
-			h.Node.IsSyncing = true
+		// 🌟 探長指令：不再暴力查帳！只負責觸發一次實體下載或畢業檢查。
+		// 如果還有缺塊，requestMissingBlockBodies 會負責去要。
+		// 如果沒缺塊了，它就不會發請求。真正的「畢業檢查」交給 handleBlock 負責！
+		if h.Node.HasMissingBodies() {
 			h.requestMissingBlockBodies(peer)
 		} else {
-			// 🌟 這裡取消 !h.Node.IsSyncing 的限制，讓它能順利跑完 finishSyncing
-			fmt.Println("✨ 檢查完畢，嘗試切換至『已同步』狀態...")
-			if h.finishSyncing() {
+			// 如果已經完全沒缺塊，且還在同步狀態，嘗試畢業
+			if h.Node.IsSyncing && h.finishSyncing() {
+				fmt.Println("🎓 [Network] 鷹架與磚塊皆已完備，同步完成！請求 Mempool...")
 				h.requestMempool(peer)
 			}
 		}
 		return
 	}
 
-	// =================================================================
-	// 🚨 嫌疑犯就在這！這就是節點的「胃」！絕對不能刪掉！
-	// =================================================================
+	// 2️⃣ 將收到的 Headers 加入我們的記憶體中 (搭鷹架)
 	addedCount := 0
 	for _, hdr := range payload.Headers {
-		// 如果資料庫已經有這個塊了，直接跳過
 		if _, ok := h.Node.Blocks[hdr.Hash]; ok {
-			continue
+			continue // 已經有了，跳過
 		}
 
 		// --- 建立 BlockIndex ---
@@ -956,59 +950,36 @@ func (h *Handler) handleHeaders(peer *Peer, msg *Message) {
 		addedCount++
 	}
 
-	// =================================================================
-	// 🔥🔥🔥 [探長終極暴力修正] 🔥🔥🔥
-	// =================================================================
-
-	// 2️⃣ 情況 B：收到了 Header，但「全部都是重複的」 (addedCount == 0)
-	if addedCount == 0 && headersCount > 0 {
-		fmt.Println("✅ All received headers were already known. Headers sync complete.")
+	// 3️⃣ 狀態判斷與下一步行動
+	if addedCount == 0 {
+		fmt.Println("✅ [Sync] 收到的 Headers 皆為已知。")
 		h.Node.HeadersSynced = true
-
-		// 🚨 探長暴力查帳
-		missingCount := 0
-		h.Node.Lock()
-		for _, bi := range h.Node.Blocks {
-			if bi.Block == nil && bi.Height > 0 {
-				missingCount++
-			}
-		}
-		h.Node.Unlock()
-
-		if missingCount > 0 {
-			fmt.Printf("🔍 [暴力防呆] 抓到了！資料庫中仍有 %d 個缺塊，強制喚醒下載！\n", missingCount)
-			h.Node.IsSyncing = true
+		if h.Node.HasMissingBodies() {
 			h.requestMissingBlockBodies(peer)
 		} else {
-			if !h.Node.IsSyncing {
-				fmt.Println("✨ 資料已齊全，嘗試切換至已同步狀態...")
-				if h.finishSyncing() {
-					h.requestMempool(peer)
-				}
+			if h.Node.IsSyncing && h.finishSyncing() {
+				fmt.Println("🎓 [Network] 鷹架與磚塊皆已完備，同步完成！請求 Mempool...")
+				h.requestMempool(peer)
 			}
 		}
 		return
 	}
 
-	// 3️⃣ 情況 C：收到了新 Header，且數量很多，繼續請求下一批
-	if addedCount > 0 && headersCount >= 500 {
-		fmt.Println("🔄 Still more headers to download, requesting next batch...")
-
-		// ✅ 探長修正：直接發送 Payload，不要在外面 Marshal！
+	// 4️⃣ 如果收到滿滿的新 Headers (例如 500 個)，繼續要下一批鷹架
+	// 注意：這裡先不要去要實體 (Bodies)，先把鷹架搭完再說！
+	if headersCount >= 500 {
+		fmt.Println("🔄 [Sync] Headers 尚未收完，繼續請求下一批...")
 		peer.Send(Message{
 			Type: MsgGetHeaders,
-			Data: GetHeadersPayload{
-				Locators: h.buildBlockLocator(),
-			},
+			Data: GetHeadersPayload{Locators: h.buildBlockLocator()},
 		})
 		return
 	}
-	// 4️⃣ 情況 D：最後一批新 Header
-	if addedCount > 0 {
-		fmt.Printf("✅ Added %d new headers. Entering body sync phase...\n", addedCount)
-		h.Node.HeadersSynced = true
-		h.requestMissingBlockBodies(peer)
-	}
+
+	// 5️⃣ 如果是最後一批新 Headers
+	fmt.Printf("✅ [Sync] 成功新增 %d 個 Headers。鷹架搭建完畢，開始索取實體 (Bodies)...\n", addedCount)
+	h.Node.HeadersSynced = true
+	h.requestMissingBlockBodies(peer)
 }
 
 func (h *Handler) requestMissingBlockBodies(peer *Peer) {
