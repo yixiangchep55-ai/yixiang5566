@@ -255,30 +255,29 @@ func (h *Handler) handleInv(peer *Peer, msg *Message) {
 // getdata
 // ======================
 func (h *Handler) handleGetData(peer *Peer, msg *Message) {
+	// 🌟 突擊檢查 1：確認 Windows 有沒有收到這封信！
+	fmt.Printf("🕵️ [Windows-Debug] 收到來自 %s 的 GetData 封包！準備拆封...\n", peer.Addr)
+
 	var req GetDataPayload
 	if err := decode(msg.Data, &req); err != nil {
-		log.Println("❌ [Network] 解碼 GetData 失敗:", err)
+		// 🚨 突擊檢查 2：是不是 Windows 自己把信搞砸了？
+		fmt.Printf("❌ [Windows-Debug] 解碼 GetDataPayload 失敗！錯誤原因: %v\n", err)
 		return
 	}
 
+	fmt.Printf("✅ [Windows-Debug] 成功拆封 GetData！對方索取 %s 類型的資料: %s\n", req.Type, req.Hash[:8])
+
 	switch req.Type {
-
 	case "block":
-		// ... 區塊處理保持不變 ...
-
+		// ... 區塊處理 ...
 	case "tx":
-		// 🌟 探長追蹤器 1：確認有人來敲門要貨了！
-		fmt.Printf("🕵️ [Debug-索取] 收到來自 %s 的 GetData 請求，索取交易: %s\n", peer.Addr, req.Hash[:8])
-
 		tx, ok := h.Node.Mempool.Get(req.Hash)
 		if !ok {
-			log.Printf("⚠️ [Network] 對方索取交易，但本地 Mempool 找不到: %s (可能已打包或被踢除)\n", req.Hash[:8])
+			fmt.Printf("⚠️ [Windows-Debug] 找不到交易 %s\n", req.Hash[:8])
 			return
 		}
 
-		// 🌟 探長追蹤器 2：確認順利從倉庫拿到貨，準備發車！
-		fmt.Printf("📤 [P2P-交貨] 從本地 Mempool 挖出交易，正在發送給 %s...\n", peer.Addr)
-
+		fmt.Printf("📤 [P2P-交貨] 找到交易 %s，正在發送 MsgTx 給 %s...\n", req.Hash[:8], peer.Addr)
 		peer.Send(Message{
 			Type: MsgTx,
 			Data: TxPayload{Tx: tx},
@@ -697,8 +696,14 @@ func (h *Handler) handleAddr(peer *Peer, msg *Message) {
 	pm.ensurePeers()
 }
 func (h *Handler) handleTx(peer *Peer, msg *Message) {
+	// 🌟 探長監視器 1：確認包裹抵達 Kali 門口
+	fmt.Printf("🕵️ [Kali-Debug] 收到來自 %s 的 MsgTx (交易包裹)！準備拆箱...\n", peer.Addr)
+
 	var payload TxPayload
 	if err := decode(msg.Data, &payload); err != nil {
+		// 🚨 抓出現行犯 1：解碼失敗！把錯誤和原始資料印出來！
+		fmt.Printf("❌ [Kali-Debug] 解碼 TxPayload 失敗！錯誤原因: %v\n", err)
+		fmt.Printf("❌ [Kali-Debug] 原始 msg.Data 內容 (型別 %T): %+v\n", msg.Data, msg.Data)
 		return
 	}
 
@@ -707,21 +712,23 @@ func (h *Handler) handleTx(peer *Peer, msg *Message) {
 	// 1️⃣ 先把 []byte 反序列化成真正的 Transaction 結構
 	tx, err := blockchain.DeserializeTransaction(txBytes)
 	if err != nil {
-		log.Println("❌ [Network] 無法解析交易資料:", err)
+		fmt.Printf("❌ [Kali-Debug] 交易反序列化失敗！錯誤原因: %v\n", err)
 		return
 	}
 
+	// 🌟 探長監視器 2：包裹完好無缺
+	fmt.Printf("✅ [Kali-Debug] 成功解析交易 %s，準備交給大門保全 (AddTx)...\n", tx.ID[:8])
+
 	// ==========================================
-	// 🚀 2️⃣ 關鍵修改：統一交給 Node 處理！(走正門)
-	// AddTx 裡面已經有 n.mu.Lock() 保護，也有 VerifyTx 驗證，
-	// 它會安全地幫你呼叫 Mempool.AddTxRBF
+	// 🚀 2️⃣ 交給 Node 處理！(走正門)
 	// ==========================================
 	if ok := h.Node.AddTx(*tx, peer.NodeID); !ok {
-		log.Println("❌ tx rejected by node:", tx.ID)
+		fmt.Printf("❌ [Kali-Debug] 交易 %s 被 Node.AddTx 拒絕 (可能手續費過低、已存在或雙花)！\n", tx.ID[:8])
 		return
 	}
 
-	log.Println("📥 tx added from network:", tx.ID)
+	// 🌟 最終勝利宣告！
+	fmt.Printf("📥 ✅ [P2P] 交易 %s 成功從網路進入 Mempool！\n", tx.ID[:8])
 
 	// 3️⃣ 廣播給其他節點
 	h.broadcastTxInv(tx.ID)
