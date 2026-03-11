@@ -409,27 +409,32 @@ func (h *Handler) handleBlock(peer *Peer, msg *Message) {
 	}
 
 	// ---------------------------------------------------------
-	// 6. 同步接力與狀態切換邏輯 (探長優化版)
+	// 6. 同步接力與狀態切換邏輯 (探長測謊版)
 	// ---------------------------------------------------------
 
 	if h.Node.IsSyncing {
-		// 檢查是否還有任何「已知 Header 但缺少 Body」的區塊
-		if !h.Node.HasMissingBodies() {
-			// 🎓 畢業典禮：只有從同步模式切換到完成模式的那一刻執行
-			if h.finishSyncing() {
+		// 🚨 測謊儀 1：到底還有沒有缺塊？
+		hasMissing := h.Node.HasMissingBodies()
+		fmt.Printf("🕵️ [畢業檢查] 高度 %d 處理完畢。是否還有缺塊 (HasMissingBodies)？ => %v\n", blk.Height, hasMissing)
+
+		if !hasMissing {
+			// 🚨 測謊儀 2：連回創世塊了嗎？
+			isFinished := h.finishSyncing()
+			fmt.Printf("🕵️ [畢業檢查] 沒有缺塊了！執行 finishSyncing() 結果 => %v\n", isFinished)
+
+			if isFinished {
 				fmt.Printf("🎓 [Network] 節點已連回創世塊，畢業！主動請求 Mempool...\n")
 				h.requestMempool(peer)
 			} else {
-				fmt.Println("🕵️ [Debug] 鏈條尚未完整連回，暫不結束同步。")
+				fmt.Println("🕵️ [Debug] finishSyncing 返回 false，校長拒絕發放畢業證書！")
 			}
 		} else {
-			// 還有缺塊，繼續要「下一批」Body。
+			// 還有缺塊，繼續要。
+			fmt.Printf("📦 [Sync] 區塊 %d 處理完畢，但清單上還有缺塊，繼續索取下一批...\n", blk.Height)
 			h.requestMissingBlockBodies(peer)
 		}
 	} else {
-		// 🌟 探長的秘密武器：非同步模式下的「同步後遺症補救」
-		// 如果我們已經同步完了（IsSyncing 為 false），
-		// 每次收到新區塊時，我們都要檢查一下 Mempool，確保沒漏掉伴隨新區塊產生的交易！
+		// 🌟 非同步模式下的正常索取
 		h.requestMempool(peer)
 	}
 
