@@ -237,6 +237,12 @@ func (h *Handler) handleInv(peer *Peer, msg *Message) {
 		}
 
 	case "tx":
+
+		if h.Node.SyncState != node.SyncSynced {
+			fmt.Println("🛡️ [P2P-防護] 節點仍在同步區塊，暫不接收交易廣播 (Inv)！")
+			return // 直接結束，不要發送 GetData 去要交易
+		}
+
 		for _, txid := range inv.Hashes {
 			if !h.Node.Mempool.Has(txid) {
 				fmt.Printf("📥 [P2P] 看到新交易 %s，準備發送 GetData...\n", txid[:8])
@@ -403,28 +409,28 @@ func (h *Handler) handleBlock(peer *Peer, msg *Message) {
 	}
 
 	// ---------------------------------------------------------
-	// 6. 同步接力與狀態切換邏輯 (探長除錯版)
+	// 6. 同步接力與狀態切換邏輯 (探長優化版)
 	// ---------------------------------------------------------
 
 	if h.Node.IsSyncing {
 		// 檢查是否還有任何「已知 Header 但缺少 Body」的區塊
 		if !h.Node.HasMissingBodies() {
-			// ==========================================================
-			// 🚨 探長的精準攔截點：只有「畢業成功」才准去要 Mempool！
-			// ==========================================================
+			// 🎓 畢業典禮：只有從同步模式切換到完成模式的那一刻執行
 			if h.finishSyncing() {
-				// 只有當這條鏈完整連回創世塊 (高度 0)，才會執行這裡
+				fmt.Printf("🎓 [Network] 節點已連回創世塊，畢業！主動請求 Mempool...\n")
 				h.requestMempool(peer)
 			} else {
-				// 斷鏈了，拒絕發放畢業證書。
-				// 下面的 MsgGetHeaders 會繼續去追討剩下的區塊。
-				fmt.Println("🕵️ [Debug] 同步尚未完全，攔截 Mempool 請求以防報錯。")
+				fmt.Println("🕵️ [Debug] 鏈條尚未完整連回，暫不結束同步。")
 			}
-			// ==========================================================
 		} else {
 			// 還有缺塊，繼續要「下一批」Body。
 			h.requestMissingBlockBodies(peer)
 		}
+	} else {
+		// 🌟 探長的秘密武器：非同步模式下的「同步後遺症補救」
+		// 如果我們已經同步完了（IsSyncing 為 false），
+		// 每次收到新區塊時，我們都要檢查一下 Mempool，確保沒漏掉伴隨新區塊產生的交易！
+		h.requestMempool(peer)
 	}
 
 	// 🔥🔥🔥 探長的引擎升級：永遠保持對新區塊的渴望 🔥🔥🔥
@@ -706,6 +712,11 @@ func (h *Handler) handleAddr(peer *Peer, msg *Message) {
 }
 func (h *Handler) handleTx(peer *Peer, msg *Message) {
 	fmt.Printf("🕵️ [Kali-Debug] 收到來自 %s 的 MsgTx (交易包裹)！準備拆箱...\n", peer.Addr)
+
+	if h.Node.SyncState != node.SyncSynced {
+		fmt.Printf("🛡️ [P2P-防護] 節點仍在同步區塊，退回來自 %s 的交易包裹！\n", peer.Addr)
+		return
+	}
 
 	// ==========================================
 	// 🌟 探長終極鑰匙：手動處理 Base64 字串！
