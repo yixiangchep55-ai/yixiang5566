@@ -437,6 +437,23 @@ func (h *Handler) handleBlock(peer *Peer, msg *Message) {
 	if h.Node.SyncState == node.SyncSynced {
 		h.broadcastInvExcept(hashHex, peer)
 	}
+
+	// =========================================================
+	// 🌟 9. 探長的事後雷達 (破解孤立池魔術專用)
+	// =========================================================
+	// 不管這個區塊是引發了孤立池大解凍，還是只是平凡的一塊。
+	// 只要現在資料庫裡「沒有缺塊」，而且我們「還沒拿到畢業證書 (IsSyncing == true)」，
+	// 就代表孤立池剛剛幫我們把進度趕完了！立刻補辦畢業典禮！
+
+	if h.Node.IsSyncing && !h.Node.HasMissingBodies() {
+		fmt.Printf("🚨 [事後雷達] 偵測到所有區塊皆已補齊！準備執行帳本重建...\n")
+		if h.finishSyncing() {
+			fmt.Printf("🎓 [Network] (雷達觸發) 鷹架與磚塊完美吻合，完成帳本重建，正式畢業！\n")
+			h.Node.SyncState = node.SyncSynced
+			h.Node.IsSyncing = false
+			h.requestMempool(peer) // 👈 就在這裡，把那 3 筆交易要回來！
+		}
+	}
 }
 
 // ======================
