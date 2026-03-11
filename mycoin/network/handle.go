@@ -409,32 +409,30 @@ func (h *Handler) handleBlock(peer *Peer, msg *Message) {
 	}
 
 	// ---------------------------------------------------------
-	// 6. 同步接力與狀態切換邏輯 (探長測謊版 + 狙擊槍)
+	// 6. 探長終極無狀態畢業典禮 (無視 IsSyncing，只看物理事實！)
 	// ---------------------------------------------------------
 
-	if h.Node.IsSyncing {
-		if !h.Node.HasMissingBodies() {
-			if h.finishSyncing() {
-				fmt.Printf("🎓 [Network] 節點已連回創世塊，畢業！主動請求 Mempool...\n")
-				h.requestMempool(peer)
+	hasMissing := h.Node.HasMissingBodies()
 
-				// 🌟 探長狙擊槍：只在畢業的這一刻，問一次「還有沒有我錯過的最新區塊？」
-				peer.Send(Message{
-					Type: MsgGetHeaders,
-					Data: GetHeadersPayload{Locators: h.buildBlockLocator()},
-				})
-			}
-		} else {
-			h.requestMissingBlockBodies(peer)
+	if !hasMissing {
+		// 🌟 物理事實：所有聽過的區塊都已經有實體了！我們就是最強的！
+		if h.Node.SyncState != node.SyncSynced {
+			fmt.Printf("🎓 [Network] 鷹架與磚塊完美吻合，強制切換至畢業狀態！\n")
+			h.Node.SyncState = node.SyncSynced
+			h.Node.IsSyncing = false
 		}
-	} else {
-		// 🌟 非同步模式下收到單一新區塊
-		h.requestMempool(peer)
 
-		// (這裡也可以選擇性放一槍，但不用也沒關係，靠 Inv 即可)
+		// 既然是最強狀態，立刻跟鄰居要看看有沒有最新的交易
+		h.requestMempool(peer)
+	} else {
+		// 🌟 還有缺塊，乖乖當個學生繼續要區塊
+
+		h.Node.IsSyncing = true
+		h.requestMissingBlockBodies(peer)
 	}
+
 	// ---------------------------------------------------------
-	// 8. 廣播新區塊 (只在已同步狀態下進行)
+	// 8. 廣播新區塊 (保持不變)
 	// ---------------------------------------------------------
 	if h.Node.SyncState == node.SyncSynced {
 		h.broadcastInvExcept(hashHex, peer)
