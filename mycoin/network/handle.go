@@ -408,28 +408,38 @@ func (h *Handler) handleBlock(peer *Peer, msg *Message) {
 		parent.Children = append(parent.Children, bi)
 	}
 
-	// 6. 探長終極無狀態畢業典禮 (找回消失的 finishSyncing 引擎！)
+	// ---------------------------------------------------------
+	// 6. 🌟 治本之道：主鏈頂點判定法 (Best-Tip Architecture)
 	// ---------------------------------------------------------
 
-	hasMissing := h.Node.HasMissingBodies()
+	if h.Node.IsSyncing {
+		// 🌟 核心邏輯：我們剛剛存入的區塊，是不是已知工作量最大的那個？
+		// 為了防止 nil pointer，先確認 h.Node.Best 存在
+		isMainChainTip := false
+		if h.Node.Best != nil {
+			isMainChainTip = (hashHex == h.Node.Best.Hash)
+		}
 
-	if !hasMissing {
-		// 🌟 物理事實：所有聽過的區塊都已經有實體了！
-		// 🚨 關鍵修復：必須呼叫 finishSyncing() 來觸發「全帳本重建」與 UTXO 更新！
-		if h.finishSyncing() {
-			if h.Node.SyncState != node.SyncSynced {
-				fmt.Printf("🎓 [Network] 鷹架與磚塊完美吻合，完成帳本重建，正式畢業！\n")
-				h.Node.SyncState = node.SyncSynced
+		if isMainChainTip {
+			fmt.Printf("🚨 [Sync] 偵測到全網最強區塊 (%d) 實體已落地！準備結算...\n", blk.Height)
+
+			// 觸發全帳本重建與 UTXO 更新！(這就是你法拉利的引擎！)
+			if h.finishSyncing() {
+				fmt.Printf("🎓 [Network] 核心主鏈完美同步！防護罩解除，切換為正常模式！\n")
 				h.Node.IsSyncing = false
-			}
+				h.Node.SyncState = node.SyncSynced
 
-			// 既然重建完成且是最強狀態，立刻跟鄰居要看看有沒有最新的交易
-			h.requestMempool(peer)
+				// 畢業典禮最後一步：把交易要回來！
+				h.requestMempool(peer)
+			}
+		} else {
+			// 還沒到山頂，繼續維持同步狀態並索取缺塊
+			h.Node.IsSyncing = true
+			h.requestMissingBlockBodies(peer)
 		}
 	} else {
-		// 🌟 還有缺塊，乖乖當個學生繼續要區塊
-		h.Node.IsSyncing = true
-		h.requestMissingBlockBodies(peer)
+		// 🌟 正常模式：收到新區塊時，順便問問有沒有交易
+		h.requestMempool(peer)
 	}
 	// ---------------------------------------------------------
 	// 8. 廣播新區塊 (只在已同步狀態下進行)
