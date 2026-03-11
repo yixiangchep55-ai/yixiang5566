@@ -726,10 +726,11 @@ func (h *Handler) handleAddr(peer *Peer, msg *Message) {
 	pm.ensurePeers()
 }
 func (h *Handler) handleTx(peer *Peer, msg *Message) {
-	fmt.Printf("🕵️ [Kali-Debug] 收到來自 %s 的 MsgTx (交易包裹)！準備拆箱...\n", peer.Addr)
+
+	//fmt.Printf("🕵️ [Kali-Debug] 收到來自 %s 的 MsgTx (交易包裹)！準備拆箱...\n", peer.Addr)
 
 	if h.Node.SyncState != node.SyncSynced {
-		fmt.Printf("🛡️ [P2P-防護] 節點仍在同步區塊，退回來自 %s 的交易包裹！\n", peer.Addr)
+		//fmt.Printf("🛡️ [P2P-防護] 節點仍在同步區塊，退回來自 %s 的交易包裹！\n", peer.Addr)
 		return
 	}
 
@@ -759,6 +760,11 @@ func (h *Handler) handleTx(peer *Peer, msg *Message) {
 	tx, err := blockchain.DeserializeTransaction(txBytes)
 	if err != nil {
 		fmt.Printf("❌ [Kali-Debug] 交易反序列化失敗！錯誤: %v\n", err)
+		return
+	}
+
+	if h.Node.Mempool.Has(tx.ID) {
+		// 已經在 Mempool 裡了，代表我們之前收過，直接安靜下班，不要去煩 AddTx！
 		return
 	}
 
