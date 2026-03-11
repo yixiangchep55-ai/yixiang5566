@@ -1,6 +1,7 @@
 package network
 
 import (
+	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
@@ -255,22 +256,30 @@ func (h *Handler) handleInv(peer *Peer, msg *Message) {
 // getdata
 // ======================
 func (h *Handler) handleGetData(peer *Peer, msg *Message) {
-	// 🌟 突擊檢查 1：確認 Windows 有沒有收到這封信！
-	fmt.Printf("🕵️ [Windows-Debug] 收到來自 %s 的 GetData 封包！準備拆封...\n", peer.Addr)
-
 	var req GetDataPayload
 	if err := decode(msg.Data, &req); err != nil {
-		// 🚨 突擊檢查 2：是不是 Windows 自己把信搞砸了？
 		fmt.Printf("❌ [Windows-Debug] 解碼 GetDataPayload 失敗！錯誤原因: %v\n", err)
 		return
 	}
 
-	fmt.Printf("✅ [Windows-Debug] 成功拆封 GetData！對方索取 %s 類型的資料: %s\n", req.Type, req.Hash[:8])
-
 	switch req.Type {
 	case "block":
-		// ... 區塊處理 ...
+		// 🤫 探長指令：這裡不印日誌保持安靜，但必須把區塊寄出去！
+		bi := h.Node.Blocks[req.Hash]
+		if bi == nil {
+			return
+		}
+
+		// 將區塊打包並發送
+		dto := BlockToDTO(bi.Block, bi)
+		peer.Send(Message{
+			Type: MsgBlock,
+			Data: dto,
+		})
+
 	case "tx":
+		// ... 這裡是你剛才寫好的交易處理與日誌 (保持原樣) ...
+		fmt.Printf("🕵️ [Windows-Debug] 收到來自 %s 的 GetData，索取【交易】: %s\n", peer.Addr, req.Hash[:8])
 		tx, ok := h.Node.Mempool.Get(req.Hash)
 		if !ok {
 			fmt.Printf("⚠️ [Windows-Debug] 找不到交易 %s\n", req.Hash[:8])
@@ -696,44 +705,50 @@ func (h *Handler) handleAddr(peer *Peer, msg *Message) {
 	pm.ensurePeers()
 }
 func (h *Handler) handleTx(peer *Peer, msg *Message) {
-	// 🌟 探長監視器 1：確認包裹抵達 Kali 門口
 	fmt.Printf("🕵️ [Kali-Debug] 收到來自 %s 的 MsgTx (交易包裹)！準備拆箱...\n", peer.Addr)
 
-	var payload TxPayload
-	if err := decode(msg.Data, &payload); err != nil {
-		// 🚨 抓出現行犯 1：解碼失敗！把錯誤和原始資料印出來！
-		fmt.Printf("❌ [Kali-Debug] 解碼 TxPayload 失敗！錯誤原因: %v\n", err)
-		fmt.Printf("❌ [Kali-Debug] 原始 msg.Data 內容 (型別 %T): %+v\n", msg.Data, msg.Data)
+	// ==========================================
+	// 🌟 探長終極鑰匙：手動處理 Base64 字串！
+	// ==========================================
+	dataMap, ok := msg.Data.(map[string]interface{})
+	if !ok {
+		fmt.Println("❌ [Kali-Debug] 封包格式錯誤，不是 map[string]interface{}")
 		return
 	}
 
-	txBytes := payload.Tx
+	txBase64Str, ok := dataMap["tx"].(string)
+	if !ok {
+		fmt.Println("❌ [Kali-Debug] 找不到 'tx' 欄位，或者它不是字串！")
+		return
+	}
 
-	// 1️⃣ 先把 []byte 反序列化成真正的 Transaction 結構
+	// 1. 將 Base64 字串解碼回原始的二進位位元組 ([]byte)
+	txBytes, err := base64.StdEncoding.DecodeString(txBase64Str)
+	if err != nil {
+		fmt.Printf("❌ [Kali-Debug] Base64 解碼失敗！錯誤: %v\n", err)
+		return
+	}
+
+	// 2. 把 []byte 反序列化成真正的 Transaction 結構
 	tx, err := blockchain.DeserializeTransaction(txBytes)
 	if err != nil {
-		fmt.Printf("❌ [Kali-Debug] 交易反序列化失敗！錯誤原因: %v\n", err)
+		fmt.Printf("❌ [Kali-Debug] 交易反序列化失敗！錯誤: %v\n", err)
 		return
 	}
 
-	// 🌟 探長監視器 2：包裹完好無缺
 	fmt.Printf("✅ [Kali-Debug] 成功解析交易 %s，準備交給大門保全 (AddTx)...\n", tx.ID[:8])
 
-	// ==========================================
-	// 🚀 2️⃣ 交給 Node 處理！(走正門)
-	// ==========================================
+	// 3. 交給 Node 處理！(走正門)
 	if ok := h.Node.AddTx(*tx, peer.NodeID); !ok {
-		fmt.Printf("❌ [Kali-Debug] 交易 %s 被 Node.AddTx 拒絕 (可能手續費過低、已存在或雙花)！\n", tx.ID[:8])
+		fmt.Printf("❌ [Kali-Debug] 交易 %s 被 Node.AddTx 拒絕！\n", tx.ID[:8])
 		return
 	}
 
-	// 🌟 最終勝利宣告！
 	fmt.Printf("📥 ✅ [P2P] 交易 %s 成功從網路進入 Mempool！\n", tx.ID[:8])
 
-	// 3️⃣ 廣播給其他節點
+	// 4. 接力廣播給其他節點
 	h.broadcastTxInv(tx.ID)
 }
-
 func (h *Handler) broadcastTxInv(txid string) {
 	// 🌟 顯影劑 1：確認有沒有進來
 	fmt.Println("🕵️ [Debug] 進入 broadcastTxInv，準備廣播交易:", txid[:8])
