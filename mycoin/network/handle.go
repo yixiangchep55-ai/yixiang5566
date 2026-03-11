@@ -238,9 +238,9 @@ func (h *Handler) handleInv(peer *Peer, msg *Message) {
 
 	case "tx":
 
-		if h.Node.SyncState != node.SyncSynced {
-			fmt.Println("🛡️ [P2P-防護] 節點仍在同步區塊，暫不接收交易廣播 (Inv)！")
-			return // 直接結束，不要發送 GetData 去要交易
+		if h.Node.IsSyncing || h.Node.HasMissingBodies() {
+			// 保持安靜，退回包裹
+			return
 		}
 
 		for _, txid := range inv.Hashes {
@@ -409,45 +409,30 @@ func (h *Handler) handleBlock(peer *Peer, msg *Message) {
 	}
 
 	// ---------------------------------------------------------
-	// 6. 同步接力與狀態切換邏輯 (探長測謊版)
+	// 6. 同步接力與狀態切換邏輯 (探長測謊版 + 狙擊槍)
 	// ---------------------------------------------------------
 
 	if h.Node.IsSyncing {
-		// 🚨 測謊儀 1：到底還有沒有缺塊？
-		hasMissing := h.Node.HasMissingBodies()
-		fmt.Printf("🕵️ [畢業檢查] 高度 %d 處理完畢。是否還有缺塊 (HasMissingBodies)？ => %v\n", blk.Height, hasMissing)
-
-		if !hasMissing {
-			// 🚨 測謊儀 2：連回創世塊了嗎？
-			isFinished := h.finishSyncing()
-			fmt.Printf("🕵️ [畢業檢查] 沒有缺塊了！執行 finishSyncing() 結果 => %v\n", isFinished)
-
-			if isFinished {
+		if !h.Node.HasMissingBodies() {
+			if h.finishSyncing() {
 				fmt.Printf("🎓 [Network] 節點已連回創世塊，畢業！主動請求 Mempool...\n")
 				h.requestMempool(peer)
-			} else {
-				fmt.Println("🕵️ [Debug] finishSyncing 返回 false，校長拒絕發放畢業證書！")
+
+				// 🌟 探長狙擊槍：只在畢業的這一刻，問一次「還有沒有我錯過的最新區塊？」
+				peer.Send(Message{
+					Type: MsgGetHeaders,
+					Data: GetHeadersPayload{Locators: h.buildBlockLocator()},
+				})
 			}
 		} else {
-			// 還有缺塊，繼續要。
-			fmt.Printf("📦 [Sync] 區塊 %d 處理完畢，但清單上還有缺塊，繼續索取下一批...\n", blk.Height)
 			h.requestMissingBlockBodies(peer)
 		}
 	} else {
-		// 🌟 非同步模式下的正常索取
+		// 🌟 非同步模式下收到單一新區塊
 		h.requestMempool(peer)
+
+		// (這裡也可以選擇性放一槍，但不用也沒關係，靠 Inv 即可)
 	}
-
-	// 🔥🔥🔥 探長的引擎升級：永遠保持對新區塊的渴望 🔥🔥🔥
-	// 只要收到新的區塊並成功上鏈，我們就順便問問對方：「還有更新的嗎？」
-	// 這能確保我們不會卡在高度 80！
-	peer.Send(Message{
-		Type: MsgGetHeaders,
-		Data: GetHeadersPayload{
-			Locators: h.buildBlockLocator(),
-		},
-	})
-
 	// ---------------------------------------------------------
 	// 8. 廣播新區塊 (只在已同步狀態下進行)
 	// ---------------------------------------------------------
