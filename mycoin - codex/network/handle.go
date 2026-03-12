@@ -9,12 +9,19 @@ import (
 	"math/big"
 	"mycoin/blockchain"
 	"mycoin/node"
+	"os"
+	"strings"
+	"sync"
+	"time"
 )
 
 type Handler struct {
-	Node         *node.Node
-	Network      *Network
-	LocalVersion VersionPayload
+	Node              *node.Node
+	Network           *Network
+	LocalVersion      VersionPayload
+	debugBlockTraffic bool
+	requestMu         sync.Mutex
+	requestedBlocks   map[string]time.Time
 }
 
 func (p *Peer) Close() {
@@ -25,13 +32,14 @@ func (p *Peer) Close() {
 
 func NewHandler(n *node.Node) *Handler {
 	return &Handler{
-		Node: n,
+		Node:              n,
+		debugBlockTraffic: envBool("MYCOIN_DEBUG_BLOCKS"),
+		requestedBlocks:   make(map[string]time.Time),
 	}
 }
 
 func (h *Handler) OnMessage(peer *Peer, msg *Message) {
-
-	if msg.Type == MsgBlock {
+	if h.debugBlockTraffic && msg.Type == MsgBlock {
 		fmt.Printf("🕵️ [Debug] TCP 收到 MsgBlock 來自 %s (長度 %v)\n", peer.Addr, msg.Data)
 	}
 	switch msg.Type {
@@ -72,6 +80,42 @@ func (h *Handler) OnMessage(peer *Peer, msg *Message) {
 	default:
 		log.Println("unknown msg:", msg.Type)
 	}
+}
+
+func envBool(name string) bool {
+	switch strings.ToLower(strings.TrimSpace(os.Getenv(name))) {
+	case "1", "true", "yes", "on":
+		return true
+	default:
+		return false
+	}
+}
+
+func (h *Handler) reserveBlockRequest(hash string) bool {
+	if hash == "" {
+		return false
+	}
+
+	h.requestMu.Lock()
+	defer h.requestMu.Unlock()
+
+	now := time.Now()
+	if requestedAt, exists := h.requestedBlocks[hash]; exists && now.Sub(requestedAt) < 5*time.Second {
+		return false
+	}
+
+	h.requestedBlocks[hash] = now
+	return true
+}
+
+func (h *Handler) releaseBlockRequest(hash string) {
+	if hash == "" {
+		return
+	}
+
+	h.requestMu.Lock()
+	delete(h.requestedBlocks, hash)
+	h.requestMu.Unlock()
 }
 
 // ======================
@@ -217,13 +261,7 @@ func (h *Handler) handleInv(peer *Peer, msg *Message) {
 				continue
 			}
 			if !h.Node.HasBlock(hashBytes) {
-				peer.Send(Message{
-					Type: MsgGetData,
-					Data: GetDataPayload{
-						Type: "block",
-						Hash: hashHex,
-					},
-				})
+				h.requestBlock(peer, hashHex)
 			}
 		}
 
@@ -308,6 +346,7 @@ func (h *Handler) handleBlock(peer *Peer, msg *Message) {
 	blk := DTOToBlock(dto)
 	hashHex := hex.EncodeToString(blk.Hash)
 	prevHex := hex.EncodeToString(blk.PrevHash)
+	h.releaseBlockRequest(hashHex)
 
 	// 1. 檢查是否已經擁有此塊 (防止重複處理)
 	bi := h.Node.Blocks[hashHex]
@@ -380,13 +419,7 @@ func (h *Handler) handleBlock(peer *Peer, msg *Message) {
 		h.Node.AddOrphan(blk)
 
 		// 既然我們已經有 Header 了，我們不需要 GetHeaders，我們直接要他的身體！
-		peer.Send(Message{
-			Type: MsgGetData, // 呼叫你要區塊資料的指令 (你應該有定義這個)
-			Data: GetDataPayload{
-				Type: "block",
-				Hash: prevHex, // 跟對方要爸爸的實體資料
-			},
-		})
+		h.requestBlock(peer, prevHex)
 		return
 	}
 
@@ -1046,12 +1079,17 @@ func (h *Handler) requestMissingBlockBodies(peer *Peer) {
 	// 2. 如果有缺塊，按「從舊到新」的順序請求
 	if len(missingBlocks) > 0 {
 		h.Node.SyncState = node.SyncBodies
-		fmt.Printf("📥 發現 %d 個缺塊，正在請求最舊的一批...\n", len(missingBlocks))
+		requested := 0
 
 		// 倒序遍歷，讓請求順序變成「舊 -> 新」
 		for i := len(missingBlocks) - 1; i >= 0; i-- {
 			target := missingBlocks[i]
-			h.requestBlock(peer, target.Hash)
+			if h.requestBlock(peer, target.Hash) {
+				requested++
+			}
+		}
+		if requested > 0 {
+			fmt.Printf("📥 發現 %d 個缺塊，本輪新請求 %d 個...\n", len(missingBlocks), requested)
 		}
 		return
 	}
@@ -1064,7 +1102,14 @@ func (h *Handler) requestMissingBlockBodies(peer *Peer) {
 		}
 	}
 }
-func (h *Handler) requestBlock(peer *Peer, hash string) {
+func (h *Handler) requestBlock(peer *Peer, hash string) bool {
+	if peer == nil || hash == "" {
+		return false
+	}
+	if !h.reserveBlockRequest(hash) {
+		return false
+	}
+
 	peer.Send(Message{
 		Type: MsgGetData,
 		Data: GetDataPayload{
@@ -1072,6 +1117,7 @@ func (h *Handler) requestBlock(peer *Peer, hash string) {
 			Hash: hash,
 		},
 	})
+	return true
 }
 
 func (h *Handler) buildBlockLocator() []string {
