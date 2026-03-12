@@ -41,15 +41,16 @@ func loadOrCreateMinerWallet(path string) *wallet.Wallet {
 }
 
 func main() {
-	mode := flag.String("mode", "archive", "Node mode: archive or pruned")
+	mode := flag.String("mode", node.ModeArchive, "Node mode: archive or pruned")
 	datadir := flag.String("datadir", "", "Directory for all node data")
 	flag.Parse()
+	*mode = node.NormalizeMode(*mode)
 
 	if *datadir == "" {
-		if *mode == "archive" {
-			*datadir = "archive"
+		if *mode == node.ModeArchive {
+			*datadir = node.ModeArchive
 		} else {
-			*datadir = "pruned"
+			*datadir = node.ModePruned
 		}
 	}
 

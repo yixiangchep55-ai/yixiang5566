@@ -1,8 +1,10 @@
 package node
 
 import (
+	"bytes"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log"
 	"math/big"
@@ -19,6 +21,14 @@ import (
 	"sync"
 	"time"
 )
+
+const (
+	ModeArchive       = "archive"
+	ModePruned        = "pruned"
+	legacyModeArchive = "archival"
+)
+
+var ErrPrunedData = errors.New("requested data is pruned")
 
 // --------------------
 // Node = 验证 + 链管理
@@ -71,6 +81,25 @@ func (n *Node) HasBlock(hash []byte) bool {
 	return false
 }
 
+func NormalizeMode(mode string) string {
+	switch mode {
+	case "", ModeArchive, legacyModeArchive:
+		return ModeArchive
+	case ModePruned:
+		return ModePruned
+	default:
+		return mode
+	}
+}
+
+func (n *Node) IsArchiveMode() bool {
+	return NormalizeMode(n.Mode) == ModeArchive
+}
+
+func (n *Node) IsPrunedMode() bool {
+	return NormalizeMode(n.Mode) == ModePruned
+}
+
 // 辅助函数也需要改
 func (n *Node) GetBlockByHash(hashHex string) *blockchain.Block {
 	if bi, ok := n.Blocks[hashHex]; ok {
@@ -121,7 +150,7 @@ func NewNode(mode string, datadir string) *Node {
 	// ==========================================
 
 	n := &Node{
-		Mode:    mode,
+		Mode:    NormalizeMode(mode),
 		Chain:   []*blockchain.Block{},
 		Mempool: mempool.NewMempool(1000, db),
 		UTXO:    blockchain.NewUTXOSet(db),
@@ -580,6 +609,10 @@ func (n *Node) Start() {
 			blk, err := blockchain.DeserializeBlock(raw)
 			if err == nil {
 				bi.Block = blk
+				bi.Timestamp = blk.Timestamp
+				bi.Bits = blk.Bits
+				bi.Nonce = blk.Nonce
+				bi.MerkleRoot = hex.EncodeToString(blk.MerkleRoot)
 			}
 		}
 	}
@@ -720,8 +753,10 @@ func (n *Node) initGenesis() {
 		Parent:     nil,
 		Children:   []*BlockIndex{}, // 养成初始化切片的好习惯
 
-		Bits:      genesis.Bits,
-		Timestamp: genesis.Timestamp,
+		Bits:       genesis.Bits,
+		Timestamp:  genesis.Timestamp,
+		Nonce:      genesis.Nonce,
+		MerkleRoot: hex.EncodeToString(genesis.MerkleRoot),
 	}
 
 	// --- 写入数据库 ---
@@ -756,6 +791,20 @@ func (n *Node) initGenesis() {
 
 func (n *Node) GetChain() []*blockchain.Block {
 	return n.Chain
+}
+
+func (n *Node) GetMainChainIndexByHeight(height uint64) *BlockIndex {
+	n.mu.Lock()
+	defer n.mu.Unlock()
+
+	cur := n.Best
+	for cur != nil && cur.Height > height {
+		cur = cur.Parent
+	}
+	if cur != nil && cur.Height == height {
+		return cur
+	}
+	return nil
 }
 
 func (n *Node) GetUTXO() *blockchain.UTXOSet {
@@ -885,15 +934,9 @@ func (n *Node) GetTransaction(txid string) (*blockchain.Transaction, *blockchain
 		return nil, nil, err
 	}
 
-	// 读 block
-	blockBytes := n.DB.Get("blocks", idx.BlockHash)
-	if blockBytes == nil {
-		return nil, nil, fmt.Errorf("block not found")
-	}
-
-	block, err := blockchain.DeserializeBlock(blockBytes)
-	if err != nil {
-		return nil, nil, err
+	block := n.GetBlockForQuery(idx.BlockHash)
+	if block == nil {
+		return nil, nil, ErrPrunedData
 	}
 
 	// 安全检查
@@ -1009,8 +1052,7 @@ func (n *Node) FindCommonAncestor(locator []string) *BlockIndex {
 	}
 
 	// 找不到，返回 genesis
-	genesisHash := hex.EncodeToString(n.Chain[0].Hash)
-	return n.Blocks[genesisHash]
+	return n.GetMainChainIndexByHeight(0)
 }
 
 func (n *Node) IsSynced() bool {
@@ -1078,13 +1120,30 @@ func (n *Node) GetResetChan() chan bool {
 
 // HasMissingBodies 檢查本地索引中是否存有「有頭無身」的區塊
 func (n *Node) HasMissingBodies() bool {
-	// 遍歷所有已知區塊索引
-	for _, bi := range n.Blocks {
-		// 如果該索引的高度比目前主鏈高，且還沒有下載區塊體
-		if bi.Height > n.Best.Height && bi.Block == nil {
+	if n.Best == nil {
+		return false
+	}
+
+	// n.Chain 是目前已正式掛載的主鏈視圖。
+	// 同步時只需要檢查從新 best 往回走，到既有主鏈錨點之前是否仍有 header-only 區塊；
+	// 更早以前被 prune 的歷史缺口不應算成同步未完成。
+	committed := make(map[string]struct{}, len(n.Chain))
+	for _, block := range n.Chain {
+		if block == nil || len(block.Hash) == 0 {
+			continue
+		}
+		committed[hex.EncodeToString(block.Hash)] = struct{}{}
+	}
+
+	for cur := n.Best; cur != nil && cur.Height > 0; cur = cur.Parent {
+		if cur.Block == nil {
 			return true
 		}
+		if _, ok := committed[cur.Hash]; ok {
+			return false
+		}
 	}
+
 	return false
 }
 
@@ -1129,17 +1188,94 @@ func (n *Node) EvaluateSyncStatus(peerHeight uint64, peerWork *big.Int) {
 // GetBlockForQuery 提供給 API 或前端查詢區塊用
 func (n *Node) GetBlockForQuery(hashHex string) *blockchain.Block {
 	// 1. 先查本地有沒有 (如果還沒被修剪，或是自己就是 archival，就會命中這裡)
-	if bi, ok := n.Blocks[hashHex]; ok && bi.Block != nil {
+	bi, ok := n.Blocks[hashHex]
+	if !ok {
+		return nil
+	}
+	if bi.Block != nil {
 		return bi.Block
 	}
 
 	// 2. 本地沒有！如果我們配置了 Broadcaster，就去向全節點求救！
-	if n.Broadcaster != nil {
+	if n.IsPrunedMode() && n.Broadcaster != nil {
 		fmt.Printf("📦 [Node] 區塊 %s 不在本地硬碟，觸發 P2P 歷史調度...\n", hashHex[:8])
 		n.Broadcaster.RequestHistoricalBlock(hashHex)
 	}
 
 	// 回傳 nil，代表「正在查詢中」或「找不到」。
 	// (在實際應用中，前端可以提示用戶「正在從網路同步歷史資料，請稍後再試」)
+	return nil
+}
+
+func (n *Node) AttachHistoricalBlock(block *blockchain.Block) error {
+	if block == nil {
+		return fmt.Errorf("nil block")
+	}
+
+	hashHex := hex.EncodeToString(block.CalcHash())
+	if len(block.Hash) > 0 && !bytes.Equal(block.Hash, block.CalcHash()) {
+		return fmt.Errorf("historical block hash mismatch")
+	}
+
+	n.mu.Lock()
+	bi := n.Blocks[hashHex]
+	if bi == nil {
+		n.mu.Unlock()
+		return fmt.Errorf("unknown historical block")
+	}
+	if bi.Block != nil {
+		n.mu.Unlock()
+		return nil
+	}
+	if bi.Height != block.Height || bi.PrevHash != hex.EncodeToString(block.PrevHash) || bi.Bits != block.Bits {
+		n.mu.Unlock()
+		return fmt.Errorf("historical block header mismatch")
+	}
+	if bi.Timestamp != 0 && bi.Timestamp != block.Timestamp {
+		n.mu.Unlock()
+		return fmt.Errorf("historical block timestamp mismatch")
+	}
+	if bi.Nonce != 0 && bi.Nonce != block.Nonce {
+		n.mu.Unlock()
+		return fmt.Errorf("historical block nonce mismatch")
+	}
+	if bi.MerkleRoot != "" && bi.MerkleRoot != hex.EncodeToString(block.MerkleRoot) {
+		n.mu.Unlock()
+		return fmt.Errorf("historical block merkle mismatch")
+	}
+	n.mu.Unlock()
+
+	if !bytes.Equal(blockchain.ComputeMerkleRoot(block.Transactions), block.MerkleRoot) {
+		return fmt.Errorf("historical block merkle does not match transactions")
+	}
+	if err := block.Verify(nil); err != nil {
+		return fmt.Errorf("historical block basic verification failed: %w", err)
+	}
+
+	n.mu.Lock()
+	defer n.mu.Unlock()
+
+	bi = n.Blocks[hashHex]
+	if bi == nil {
+		return fmt.Errorf("historical block disappeared")
+	}
+	if bi.Block != nil {
+		return nil
+	}
+
+	bi.Block = block
+	bi.Timestamp = block.Timestamp
+	bi.Bits = block.Bits
+	bi.Nonce = block.Nonce
+	bi.MerkleRoot = hex.EncodeToString(block.MerkleRoot)
+
+	if parent := n.Blocks[bi.PrevHash]; parent != nil {
+		bi.Parent = parent
+	}
+
+	n.DB.Put("blocks", hashHex, block.Serialize())
+	idxBytes, _ := json.Marshal(bi)
+	n.DB.Put("index", hashHex, idxBytes)
+	n.markBlockTransactionsPruned(hashHex, block, false)
 	return nil
 }

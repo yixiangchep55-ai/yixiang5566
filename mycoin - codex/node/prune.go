@@ -3,6 +3,7 @@ package node
 import (
 	"encoding/json"
 	"fmt"
+	"mycoin/blockchain"
 )
 
 // PruneDepth 定義修剪節點要保留的安全距離 (最近 2000 個區塊)
@@ -13,7 +14,7 @@ func (n *Node) PruneBlocks() {
 	// ==========================================
 	// 🌟 探長防護 1：全節點 (Archival) 絕對不能修剪！
 	// ==========================================
-	if n.Mode == "archival" {
+	if n.IsArchiveMode() {
 		// Archival 節點要當歷史老師，不能刪資料
 		return
 	}
@@ -68,22 +69,35 @@ func (n *Node) PruneBlocks() {
 
 	prunedCount := 0
 	for _, hash := range toPrune {
-		// 1. 刪除硬碟中的實體數據
-		n.DB.Delete("blocks", hash)
+		var blockToPrune *blockchain.Block
 
-		// 2. 清除記憶體中的實體指針，讓 GC 釋放 RAM！
 		n.mu.Lock()
-		if bi, exists := n.Blocks[hash]; exists {
-			if bi.Block != nil {
-				bi.Block = nil // 👈 探長關鍵：這樣才算真的釋放記憶體！
-				prunedCount++
+		if bi, exists := n.Blocks[hash]; exists && bi.Block != nil {
+			blockToPrune = bi.Block
+			bi.Timestamp = blockToPrune.Timestamp
+			bi.Bits = blockToPrune.Bits
+			bi.Nonce = blockToPrune.Nonce
+			bi.MerkleRoot = fmt.Sprintf("%x", blockToPrune.MerkleRoot)
+			bi.Block = nil // 👈 探長關鍵：這樣才算真的釋放記憶體！
+			if idxBytes, err := json.Marshal(bi); err == nil {
+				n.DB.Put("index", hash, idxBytes)
 			}
+			prunedCount++
 		}
 		n.mu.Unlock()
+
+		if blockToPrune != nil {
+			n.markBlockTransactionsPruned(hash, blockToPrune, true)
+		}
+
+		// 1. 刪除硬碟中的實體數據
+		n.DB.Delete("blocks", hash)
 
 		// ⭐ 注意：我們沒有刪除 DB 裡的 "index" 和 "meta"，
 		// 所以 bi.Hash, bi.PrevHash, bi.Height 等鷹架都還在！
 	}
+
+	n.UpdateChainFromBest()
 
 	fmt.Printf("✅ [Prune] 瘦身完成！共清理了 %d 個舊區塊實體，釋放了大量空間。\n", prunedCount)
 }

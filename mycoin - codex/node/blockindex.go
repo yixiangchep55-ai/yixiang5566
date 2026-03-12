@@ -11,8 +11,10 @@ type BlockIndex struct {
 	CumWork  string `json:"cumwork"`
 	PrevHash string `json:"prevhash"`
 
-	Timestamp int64  `json:"timestamp"`
-	Bits      uint32 `json:"bits"`
+	Timestamp  int64  `json:"timestamp"`
+	Bits       uint32 `json:"bits"`
+	Nonce      uint64 `json:"nonce"`
+	MerkleRoot string `json:"merkle_root"`
 
 	CumWorkInt *big.Int `json:"-"`
 	// 重启后重新填充

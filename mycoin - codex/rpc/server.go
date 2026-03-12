@@ -3,6 +3,7 @@ package rpc
 import (
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log"
 	"net/http"
@@ -11,6 +12,7 @@ import (
 
 	"mycoin/blockchain"
 	"mycoin/network"
+	nodepkg "mycoin/node"
 )
 
 // 启动 RPC 服务
@@ -71,12 +73,18 @@ func (s *RPCServer) handleRPC(w http.ResponseWriter, r *http.Request) {
 
 		h := int(height)
 
-		if h < 0 || h >= len(s.Node.Chain) {
+		if h < 0 {
 			s.writeError(w, req.ID, "height out of range")
 			return
 		}
 
-		s.writeResult(w, req.ID, s.Node.Chain[h].Hash)
+		bi := s.Node.GetMainChainIndexByHeight(uint64(h))
+		if bi == nil {
+			s.writeError(w, req.ID, "height out of range")
+			return
+		}
+
+		s.writeResult(w, req.ID, bi.Hash)
 
 	case "getblock":
 		if len(req.Params) != 1 {
@@ -92,12 +100,23 @@ func (s *RPCServer) handleRPC(w http.ResponseWriter, r *http.Request) {
 
 		// 1️⃣ 先从 BlockIndex 查
 		bi, ok := s.Node.Blocks[hash]
-		if !ok || bi.Block == nil {
+		if !ok {
 			s.writeError(w, req.ID, "block not found")
 			return
 		}
 
 		b := bi.Block
+		if b == nil {
+			b = s.Node.GetBlockForQuery(hash)
+			if b == nil {
+				if s.Node.IsPrunedMode() {
+					s.writeError(w, req.ID, "block body is pruned locally; requested from an archive node, retry later")
+				} else {
+					s.writeError(w, req.ID, "block body not available locally")
+				}
+				return
+			}
+		}
 
 		// 2️⃣ 構造 RPC Block (建議增加 Reward 欄位)
 		rpcBlock := RPCBlock{
@@ -172,16 +191,21 @@ func (s *RPCServer) handleRPC(w http.ResponseWriter, r *http.Request) {
 		}
 
 		// 2️⃣ 查区块链
-		for _, blk := range s.Node.Chain {
-			for _, tx := range blk.Transactions {
-				if tx.ID == txid {
-					s.writeResult(w, req.ID, string(tx.Serialize()))
-					return
+		tx, _, err := s.Node.GetTransaction(txid)
+		if err != nil {
+			if errors.Is(err, nodepkg.ErrPrunedData) {
+				if s.Node.IsPrunedMode() {
+					s.writeError(w, req.ID, "transaction is in a pruned block; requested from an archive node, retry later")
+				} else {
+					s.writeError(w, req.ID, "transaction data not available locally")
 				}
+				return
 			}
+			s.writeError(w, req.ID, err.Error())
+			return
 		}
 
-		s.writeError(w, req.ID, "tx not found")
+		s.writeResult(w, req.ID, string(tx.Serialize()))
 
 	case "sendrawtransaction":
 		if len(req.Params) != 1 {
@@ -231,22 +255,25 @@ func (s *RPCServer) handleRPC(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 
-		// 1️⃣ Node查询 tx + block
-		tx, block, err := s.Node.GetTransaction(txid)
-		if err != nil {
-			s.writeError(w, req.ID, err.Error())
-			return
-		}
-
-		// 2️⃣ 再查 txindex 获取高度
+		// 1️⃣ 先查 txindex 获取高度和修剪状态
 		idx, err := s.Node.GetTxIndex(txid)
 		if err != nil {
 			s.writeError(w, req.ID, "txindex missing")
 			return
 		}
 
-		if idx.Pruned {
-			s.writeError(w, req.ID, "This transaction is in a pruned block. Please query an archive node.")
+		// 2️⃣ Node查询 tx + block
+		tx, block, err := s.Node.GetTransaction(txid)
+		if err != nil {
+			if errors.Is(err, nodepkg.ErrPrunedData) || idx.Pruned {
+				if s.Node.IsPrunedMode() {
+					s.writeError(w, req.ID, "transaction is in a pruned block; requested from an archive node, retry later")
+				} else {
+					s.writeError(w, req.ID, "transaction data not available locally")
+				}
+				return
+			}
+			s.writeError(w, req.ID, err.Error())
 			return
 		}
 

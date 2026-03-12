@@ -80,6 +80,8 @@ func (n *Node) connectBlock(block *blockchain.Block, parent *BlockIndex) bool {
 		bi.Block = block
 		bi.Bits = block.Bits
 		bi.Timestamp = block.Timestamp
+		bi.Nonce = block.Nonce
+		bi.MerkleRoot = hex.EncodeToString(block.MerkleRoot)
 		bi.Parent = parent // 確保父子關係正確
 
 		// 🔥 修正：強制更新工作量，不要用 if bi.CumWorkInt == nil 判斷
@@ -95,6 +97,8 @@ func (n *Node) connectBlock(block *blockchain.Block, parent *BlockIndex) bool {
 			Height:     parent.Height + 1,
 			Timestamp:  block.Timestamp,
 			Bits:       block.Bits,
+			Nonce:      block.Nonce,
+			MerkleRoot: hex.EncodeToString(block.MerkleRoot),
 			CumWork:    cumWork.Text(16),
 			CumWorkInt: cumWork,
 			Block:      block,
@@ -290,12 +294,30 @@ func (n *Node) indexTransactions(block *blockchain.Block, bi *BlockIndex) {
 			BlockHash: blockHashHex, // hex
 			Height:    bi.Height,
 			TxOffset:  i,
+			Pruned:    false,
 		}
 
-		data, _ := json.Marshal(idx)
+		n.putTxIndexEntry(txidHex, idx)
+	}
+}
 
-		// key 必须是字符串（hex）
-		n.DB.Put("txindex", txidHex, data)
+func (n *Node) putTxIndexEntry(txid string, idx blockchain.TxIndexEntry) {
+	data, _ := json.Marshal(idx)
+	n.DB.Put("txindex", txid, data)
+}
+
+func (n *Node) markBlockTransactionsPruned(blockHash string, block *blockchain.Block, pruned bool) {
+	if block == nil {
+		return
+	}
+
+	for i, tx := range block.Transactions {
+		n.putTxIndexEntry(tx.ID, blockchain.TxIndexEntry{
+			BlockHash: blockHash,
+			Height:    block.Height,
+			TxOffset:  i,
+			Pruned:    pruned,
+		})
 	}
 }
 

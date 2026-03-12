@@ -108,8 +108,8 @@ func (h *Handler) handleVersion(peer *Peer, msg *Message) {
 	peer.Height = v.Height
 	peer.CumWork = v.CumWork
 	peer.State = StateVersionRecv
-	peer.NodeID = v.NodeID // 🌟 探長提醒：記得抄下對方的身分證！
-	peer.Mode = v.Mode     // 🌟 探長提醒：記下對方是「全節點(archival)」還是「修剪節點(pruned)」！
+	peer.NodeID = v.NodeID                 // 🌟 探長提醒：記得抄下對方的身分證！
+	peer.Mode = node.NormalizeMode(v.Mode) // 🌟 探長提醒：記下對方是「全節點(archive)」還是「修剪節點(pruned)」！
 
 	// ==========================================================
 	// 🚨 探長智商升級包：轉換工作量並啟動動態切換！
@@ -334,11 +334,28 @@ func (h *Handler) handleBlock(peer *Peer, msg *Message) {
 			Hash:       hashHex,
 			PrevHash:   prevHex,
 			Height:     blk.Height,
+			Timestamp:  blk.Timestamp,
 			CumWorkInt: node.WorkFromTarget(blk.Target),
 			Bits:       blk.Bits,
+			Nonce:      blk.Nonce,
+			MerkleRoot: hex.EncodeToString(blk.MerkleRoot),
 		}
 		bi.CumWork = bi.CumWorkInt.Text(16)
 		h.Node.Blocks[hashHex] = bi
+	}
+
+	localBodyHeight := uint64(0)
+	if chainLen := len(h.Node.Chain); chainLen > 0 {
+		localBodyHeight = h.Node.Chain[chainLen-1].Height
+	}
+	mainAtHeight := h.Node.GetMainChainIndexByHeight(blk.Height)
+	if bi.Block == nil && blk.Height < localBodyHeight && mainAtHeight != nil && mainAtHeight.Hash == hashHex {
+		if err := h.Node.AttachHistoricalBlock(blk); err != nil {
+			fmt.Printf("❌ [Prune] 歷史區塊 %d (%s) 回填失敗: %v\n", blk.Height, hashHex, err)
+			return
+		}
+		fmt.Printf("📚 [Prune] 已回填歷史區塊 %d (%s)\n", blk.Height, hashHex[:8])
+		return
 	}
 
 	// ---------------------------------------------------------
@@ -418,8 +435,6 @@ func (h *Handler) handleBlock(peer *Peer, msg *Message) {
 			// 觸發全帳本重建與 UTXO 更新！(這就是你法拉利的引擎！)
 			if h.finishSyncing() {
 				fmt.Printf("🎓 [Network] 核心主鏈完美同步！防護罩解除，切換為正常模式！\n")
-				h.Node.IsSyncing = false
-				h.Node.SyncState = node.SyncSynced
 
 				// 畢業典禮最後一步：把交易要回來！
 				h.requestMempool(peer)
@@ -451,8 +466,6 @@ func (h *Handler) handleBlock(peer *Peer, msg *Message) {
 		fmt.Printf("🚨 [事後雷達] 偵測到所有區塊皆已補齊！準備執行帳本重建...\n")
 		if h.finishSyncing() {
 			fmt.Printf("🎓 [Network] (雷達觸發) 鷹架與磚塊完美吻合，完成帳本重建，正式畢業！\n")
-			h.Node.SyncState = node.SyncSynced
-			h.Node.IsSyncing = false
 			h.requestMempool(peer) // 👈 就在這裡，把那 3 筆交易要回來！
 		}
 	}
@@ -464,6 +477,13 @@ func (h *Handler) handleBlock(peer *Peer, msg *Message) {
 
 // 1. 發送 Mempool 請求
 func (h *Handler) requestMempool(peer *Peer) {
+	if peer == nil {
+		return
+	}
+	if h.Node.SyncState != node.SyncSynced || h.Node.IsSyncing || h.Node.HasMissingBodies() {
+		return
+	}
+
 	fmt.Printf("📢 [P2P] 向 %s 發送 MsgMempool 請求，索取未確認交易...\n", peer.Addr)
 	peer.Send(Message{
 		Type: "mempool", // 定義一個新的指令字串
@@ -871,25 +891,18 @@ func (h *Handler) handleGetHeaders(peer *Peer, msg *Message) {
 	}
 
 	// ------------------------------------------------------------------
-	// 步驟 2: 線性讀取主鏈 (陣列遍歷)
+	// 步驟 2: 沿著最佳鏈回溯 headers（不依賴完整 block bodies）
 	// ------------------------------------------------------------------
 	var headers []HeaderDTO
 	const MaxHeaders = 2000
 
-	scanHeight := startHeight + 1
-	chainLen := int64(len(h.Node.Chain))
+	var reversed []*node.BlockIndex
+	for cur := h.Node.Best; cur != nil && int64(cur.Height) > startHeight && len(reversed) < MaxHeaders; cur = cur.Parent {
+		reversed = append(reversed, cur)
+	}
 
-	for scanHeight < chainLen && len(headers) < MaxHeaders {
-		// 直接從陣列拿，絕對不會錯！
-		block := h.Node.Chain[scanHeight]
-
-		// 轉成 HeaderDTO
-		hashHex := hex.EncodeToString(block.Hash)
-		if bi, ok := h.Node.Blocks[hashHex]; ok {
-			headers = append(headers, BlockIndexToHeaderDTO(bi))
-		}
-
-		scanHeight++
+	for i := len(reversed) - 1; i >= 0; i-- {
+		headers = append(headers, BlockIndexToHeaderDTO(reversed[i]))
 	}
 
 	// fmt.Printf("📤 回傳 %d 個 Headers (Height %d -> %d)\n", len(headers), startHeight+1, scanHeight-1)
@@ -939,12 +952,14 @@ func (h *Handler) handleHeaders(peer *Peer, msg *Message) {
 
 		// --- 建立 BlockIndex ---
 		bi := &node.BlockIndex{
-			Hash:      hdr.Hash,
-			PrevHash:  hdr.PrevHash,
-			Height:    hdr.Height,
-			CumWork:   hdr.CumWork,
-			Bits:      hdr.Bits,
-			Timestamp: hdr.Timestamp,
+			Hash:       hdr.Hash,
+			PrevHash:   hdr.PrevHash,
+			Height:     hdr.Height,
+			CumWork:    hdr.CumWork,
+			Bits:       hdr.Bits,
+			Timestamp:  hdr.Timestamp,
+			Nonce:      hdr.Nonce,
+			MerkleRoot: hdr.MerkleRoot,
 		}
 		bi.CumWorkInt = new(big.Int)
 		if hdr.CumWork != "" {
@@ -1002,9 +1017,20 @@ func (h *Handler) handleHeaders(peer *Peer, msg *Message) {
 func (h *Handler) requestMissingBlockBodies(peer *Peer) {
 	bi := h.Node.Best
 	missingBlocks := []*node.BlockIndex{}
+	committed := make(map[string]struct{}, len(h.Node.Chain))
+
+	for _, block := range h.Node.Chain {
+		if block == nil || len(block.Hash) == 0 {
+			continue
+		}
+		committed[hex.EncodeToString(block.Hash)] = struct{}{}
+	}
 
 	// 1. 收集缺口，限制一次請求的數量（例如 16 個）
 	for bi != nil && bi.Height > 0 {
+		if _, ok := committed[bi.Hash]; ok {
+			break
+		}
 		if bi.Block == nil {
 			// 注意：我們是往回走，所以收集到的順序是 [新 -> 舊]
 			missingBlocks = append(missingBlocks, bi)
@@ -1019,6 +1045,7 @@ func (h *Handler) requestMissingBlockBodies(peer *Peer) {
 
 	// 2. 如果有缺塊，按「從舊到新」的順序請求
 	if len(missingBlocks) > 0 {
+		h.Node.SyncState = node.SyncBodies
 		fmt.Printf("📥 發現 %d 個缺塊，正在請求最舊的一批...\n", len(missingBlocks))
 
 		// 倒序遍歷，讓請求順序變成「舊 -> 新」
@@ -1029,23 +1056,12 @@ func (h *Handler) requestMissingBlockBodies(peer *Peer) {
 		return
 	}
 
-	// =================================================================
-	// 🔥🔥🔥 [關鍵修改]：移除舊的阻擋條件，改用 SyncState 判斷 🔥🔥🔥
-	// =================================================================
-
-	// 舊代碼（刪除）：
-	// if !h.Node.IsSyncing {
-	//     return
-	// }
-
-	// 3. 檢查：如果我們現在還不是「已同步」狀態，且上面已經確認沒缺塊了
-	// 那麼我們必須強制切換狀態，讓礦工開工！
 	if h.Node.SyncState != node.SyncSynced {
-		fmt.Println("✅ 所有區塊內容已齊全，觸發同步完成...")
-		h.finishSyncing() // 👈 這裡執行後，SyncState 變成 2，礦工就會醒來
-	} else {
-		// 如果已經是 Synced 狀態，就什麼都不用做
-		// fmt.Println("✅ 檢查完畢，區塊完整，無需動作。")
+		fmt.Println("[Sync] All block bodies are ready, finishing sync...")
+		if h.finishSyncing() {
+			fmt.Println("[Network] Sync finished, requesting mempool...")
+			h.requestMempool(peer)
+		}
 	}
 }
 func (h *Handler) requestBlock(peer *Peer, hash string) {
@@ -1141,12 +1157,12 @@ func (h *Handler) RequestHistoricalBlock(hashHex string) {
 	h.Network.mu.Lock()
 	defer h.Network.mu.Unlock()
 
-	fmt.Printf("🔍 [Query] 本地無區塊 %s，正在尋找全網的 Archival 節點發出協尋...\n", hashHex[:8])
+	fmt.Printf("🔍 [Query] 本地無區塊 %s，正在尋找全網的 archive 節點發出協尋...\n", hashHex[:8])
 
 	requestSent := false
 	for _, p := range h.Network.Peers {
-		// 🌟 探長的高級調度：只向狀態活躍，且標明自己是 "archival" 的老大哥伸手！
-		if p.State == StateActive && p.Mode == "archival" {
+		// 🌟 探長的高級調度：只向狀態活躍，且標明自己是 "archive" 的老大哥伸手！
+		if p.State == StateActive && node.NormalizeMode(p.Mode) == node.ModeArchive {
 			p.Send(Message{
 				Type: MsgGetData,
 				Data: GetDataPayload{
@@ -1160,7 +1176,7 @@ func (h *Handler) RequestHistoricalBlock(hashHex string) {
 	}
 
 	if !requestSent {
-		fmt.Println("⚠️ [警告] 網路上目前找不到任何 Archival 全節點！歷史查詢失敗。")
+		fmt.Println("⚠️ [警告] 網路上目前找不到任何 archive 全節點！歷史查詢失敗。")
 	}
 }
 

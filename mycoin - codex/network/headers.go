@@ -5,6 +5,7 @@ import (
 	"math/big"
 	"mycoin/blockchain"
 	"mycoin/node"
+	"mycoin/utils"
 )
 
 type HeaderDTO struct {
@@ -25,31 +26,40 @@ type HeadersPayload struct {
 
 func HeaderDTOToBlock(h HeaderDTO) *blockchain.Block {
 	target := new(big.Int)
-	target.SetString(h.Target, 16)
+	if h.Target != "" {
+		target.SetString(h.Target, 16)
+	} else {
+		target = utils.CompactToBig(h.Bits)
+	}
 
 	// 🔥 必须 hex → bytes
 	prevHashBytes, _ := hex.DecodeString(h.PrevHash)
 	hashBytes, _ := hex.DecodeString(h.Hash)
+	merkleRootBytes, _ := hex.DecodeString(h.MerkleRoot)
 
 	return &blockchain.Block{
-		Height:    h.Height,
-		PrevHash:  prevHashBytes, // []byte
-		Timestamp: h.Timestamp,
-		Nonce:     h.Nonce,
-		Target:    target,
-		Hash:      hashBytes, // []byte
-		Bits:      h.Bits,
+		Height:     h.Height,
+		PrevHash:   prevHashBytes, // []byte
+		Timestamp:  h.Timestamp,
+		Nonce:      h.Nonce,
+		Target:     target,
+		Hash:       hashBytes, // []byte
+		Bits:       h.Bits,
+		MerkleRoot: merkleRootBytes,
 	}
 }
 
 func BlockIndexToHeaderDTO(bi *node.BlockIndex) HeaderDTO {
 	dto := HeaderDTO{
-		Hash:      bi.Hash,
-		PrevHash:  bi.PrevHash,
-		Height:    bi.Height,
-		CumWork:   bi.CumWork,
-		Bits:      bi.Bits,
-		Timestamp: bi.Timestamp,
+		Hash:       bi.Hash,
+		PrevHash:   bi.PrevHash,
+		Height:     bi.Height,
+		CumWork:    bi.CumWork,
+		Bits:       bi.Bits,
+		Timestamp:  bi.Timestamp,
+		Nonce:      bi.Nonce,
+		MerkleRoot: bi.MerkleRoot,
+		Target:     utils.CompactToBig(bi.Bits).Text(16),
 	}
 
 	if bi.Block != nil { // body downloaded
