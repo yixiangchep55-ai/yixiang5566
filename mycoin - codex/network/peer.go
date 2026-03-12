@@ -43,11 +43,14 @@ type Peer struct {
 }
 
 func NewPeer(conn net.Conn) *Peer {
+	dec := json.NewDecoder(conn)
+	dec.UseNumber()
+
 	return &Peer{
 		Conn: conn,
 		Addr: conn.RemoteAddr().String(),
 		enc:  json.NewEncoder(conn),
-		dec:  json.NewDecoder(conn),
+		dec:  dec,
 	}
 }
 

@@ -1,11 +1,30 @@
 package node
 
 import (
+	"bytes"
 	"encoding/hex"
 	"errors"
 	"fmt"
 	"mycoin/blockchain"
 )
+
+const expectedGenesisHashHex = "69be2e7e5321bb7185a8afcbc6ed8b957cc1c6a402bc99c479bd9f9887c58c61"
+
+func isExpectedGenesis(block *blockchain.Block) bool {
+	if block == nil || block.Height != 0 {
+		return false
+	}
+
+	if len(block.PrevHash) != 32 || !bytes.Equal(block.PrevHash, make([]byte, 32)) {
+		return false
+	}
+
+	if hex.EncodeToString(block.CalcHash()) != expectedGenesisHashHex {
+		return false
+	}
+
+	return len(block.Hash) == 0 || hex.EncodeToString(block.Hash) == expectedGenesisHashHex
+}
 
 // VerifyBlockWithUTXO 驗證整個區塊的合法性
 func VerifyBlockWithUTXO(
@@ -13,6 +32,13 @@ func VerifyBlockWithUTXO(
 	parent *blockchain.Block,
 	utxo *blockchain.UTXOSet,
 ) error {
+	if parent == nil && block != nil && block.Height == 0 {
+		if !isExpectedGenesis(block) {
+			return fmt.Errorf("invalid genesis block")
+		}
+		return nil
+	}
+
 	// 1️⃣ 基礎驗證 (PoW, PrevHash)
 	if err := block.Verify(parent); err != nil {
 		return err

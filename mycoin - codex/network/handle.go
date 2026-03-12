@@ -9,8 +9,6 @@ import (
 	"math/big"
 	"mycoin/blockchain"
 	"mycoin/node"
-
-	"github.com/mitchellh/mapstructure"
 )
 
 type Handler struct {
@@ -74,16 +72,6 @@ func (h *Handler) OnMessage(peer *Peer, msg *Message) {
 	default:
 		log.Println("unknown msg:", msg.Type)
 	}
-
-	// ⭐ Fast Sync 完成检测（补丁 #4）
-	if h.Node.IsSyncing && h.Node.HeadersSynced && h.Node.BodiesSynced {
-		fmt.Println("🎉 Fast Sync complete! Rebuilding UTXO...")
-
-		h.Node.RebuildUTXO()
-		h.Node.IsSyncing = false
-
-		fmt.Println("🎉 Node is now fully synced and valid.")
-	}
 }
 
 // ======================
@@ -91,7 +79,7 @@ func (h *Handler) OnMessage(peer *Peer, msg *Message) {
 // ======================
 func (h *Handler) handleVersion(peer *Peer, msg *Message) {
 	var v VersionPayload
-	if err := mapstructure.Decode(msg.Data, &v); err != nil {
+	if err := decode(msg.Data, &v); err != nil {
 		log.Println("decode version error:", err)
 		return
 	}
@@ -663,17 +651,11 @@ func (h *Handler) broadcastInv(hash string) {
 // 工具：安全解码
 // ======================
 func decode(src any, dst any) error {
-	// 🌟 探長強烈建議：使用 mapstructure 並開啟 JSON 標籤支持
-	config := &mapstructure.DecoderConfig{
-		Metadata: nil,
-		Result:   dst,
-		TagName:  "json", // 讓它能讀取 `json:"..."` 標籤，確保雙向相容
-	}
-	decoder, err := mapstructure.NewDecoder(config)
+	raw, err := json.Marshal(src)
 	if err != nil {
 		return err
 	}
-	return decoder.Decode(src)
+	return json.Unmarshal(raw, dst)
 }
 
 func (h *Handler) handleGetAddr(peer *Peer, msg *Message) {
@@ -709,7 +691,7 @@ func (h *Handler) handleAddr(peer *Peer, msg *Message) {
 		// 1. 基礎過濾：不連自己
 		// 1. 基礎過濾：不連自己 (只檢查 IP 就好，身分證等連上了再給大門保全去查)
 		// 🚨 探長修正：把 addr == h.LocalVersion.NodeID 刪掉！
-		if addr == pm.ListenOn {
+		if pm.isSelfDialAddress(addr) {
 			continue
 		}
 

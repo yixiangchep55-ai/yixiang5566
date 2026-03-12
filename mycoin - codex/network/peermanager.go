@@ -40,6 +40,64 @@ func NewPeerManager(net *Network, listen string, maxPeers int) *PeerManager {
 	}
 }
 
+func normalizeHost(host string) string {
+	host = strings.Trim(host, "[]")
+	if host == "localhost" {
+		return "127.0.0.1"
+	}
+	return host
+}
+
+func (pm *PeerManager) isLocalHost(host string) bool {
+	host = normalizeHost(host)
+	switch host {
+	case "", "0.0.0.0", "::", "127.0.0.1", "::1":
+		return true
+	}
+
+	listenHost, _, err := net.SplitHostPort(pm.ListenOn)
+	if err == nil {
+		listenHost = normalizeHost(listenHost)
+		if listenHost != "" && listenHost != "0.0.0.0" && listenHost != "::" && host == listenHost {
+			return true
+		}
+	}
+
+	addrs, err := net.InterfaceAddrs()
+	if err != nil {
+		return false
+	}
+
+	for _, addr := range addrs {
+		switch value := addr.(type) {
+		case *net.IPNet:
+			if normalizeHost(value.IP.String()) == host {
+				return true
+			}
+		case *net.IPAddr:
+			if normalizeHost(value.IP.String()) == host {
+				return true
+			}
+		}
+	}
+
+	return false
+}
+
+func (pm *PeerManager) isSelfDialAddress(addr string) bool {
+	host, port, err := net.SplitHostPort(addr)
+	if err != nil {
+		return false
+	}
+
+	_, listenPort, err := net.SplitHostPort(pm.ListenOn)
+	if err == nil && listenPort != "" && port != listenPort {
+		return false
+	}
+
+	return pm.isLocalHost(host)
+}
+
 func (pm *PeerManager) Start() {
 
 	// -----------------------------------
@@ -95,7 +153,7 @@ func (pm *PeerManager) startListener() {
 
 func (pm *PeerManager) Connect(addr string) {
 
-	if addr == pm.ListenOn { // ⭐ 阻止自连接
+	if pm.isSelfDialAddress(addr) {
 		return
 	}
 	pm.mu.Lock()
@@ -250,7 +308,7 @@ func (pm *PeerManager) ensurePeers() {
 	for _, addr := range addrs {
 
 		// 🚫 不要连接自己的监听地址
-		if addr == pm.ListenOn {
+		if pm.isSelfDialAddress(addr) {
 			continue
 		}
 
@@ -289,7 +347,7 @@ func (pm *PeerManager) LoadPeers() []string {
 
 func (pm *PeerManager) LoadStaticSeeds() {
 	for _, seed := range DefaultSeeds {
-		if seed == pm.ListenOn { // ⭐ 不允许把自己加入 AddrMgr
+		if pm.isSelfDialAddress(seed) {
 			log.Println("⛔ skipping self seed:", seed)
 			continue
 		}
