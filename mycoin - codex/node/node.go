@@ -66,6 +66,9 @@ type BlockBroadcaster interface {
 func (n *Node) HasBlock(hash []byte) bool {
 	key := hex.EncodeToString(hash)
 
+	n.mu.Lock()
+	defer n.mu.Unlock()
+
 	// 1. 检查索引是否存在
 	bi, exists := n.Blocks[key]
 	if exists {
@@ -79,6 +82,11 @@ func (n *Node) HasBlock(hash []byte) bool {
 	}
 
 	return false
+}
+
+func (n *Node) addOrphanLocked(blk *blockchain.Block) {
+	phHex := hex.EncodeToString(blk.PrevHash)
+	n.Orphans[phHex] = append(n.Orphans[phHex], blk)
 }
 
 func NormalizeMode(mode string) string {
@@ -381,7 +389,7 @@ func (n *Node) AddBlock(block *blockchain.Block) bool {
 	parentIndex, exists := n.Blocks[prevHex]
 	if !exists || parentIndex.Block == nil {
 		log.Printf("⚠️ 發現孤塊: %d (缺少父塊 %s)\n", block.Height, prevHex[:8])
-		n.AddOrphan(block)
+		n.addOrphanLocked(block)
 		n.mu.Unlock() // 🔓 存入孤兒院，安全解鎖
 		return false
 	}
@@ -913,8 +921,9 @@ func (n *Node) AllBodiesDownloaded() bool {
 }
 
 func (n *Node) AddOrphan(blk *blockchain.Block) {
-	phHex := hex.EncodeToString(blk.PrevHash)
-	n.Orphans[phHex] = append(n.Orphans[phHex], blk)
+	n.mu.Lock()
+	defer n.mu.Unlock()
+	n.addOrphanLocked(blk)
 }
 
 func (n *Node) GetTxIndex(txid string) (*blockchain.TxIndexEntry, error) {
