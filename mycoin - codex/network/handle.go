@@ -631,6 +631,9 @@ func (h *Handler) finishSyncing() bool {
 		h.Node.DB.Put("meta", "best", []byte(h.Node.Best.Hash))
 		fmt.Printf("✅ 同步完成！高度: %d\n", h.Node.Best.Height)
 		h.Node.Unlock()
+		if h.Node.IsPrunedMode() {
+			go h.Node.PruneBlocks()
+		}
 		h.broadcastCurrentMempool()
 		return true
 	}
@@ -679,6 +682,9 @@ func (h *Handler) finishSyncing() bool {
 	h.Node.DB.Put("meta", "best", []byte(h.Node.Best.Hash))
 	fmt.Printf("✅ 同步完成！高度: %d\n", h.Node.Best.Height)
 	h.Node.Unlock()
+	if h.Node.IsPrunedMode() {
+		go h.Node.PruneBlocks()
+	}
 	h.broadcastCurrentMempool()
 	return true
 }

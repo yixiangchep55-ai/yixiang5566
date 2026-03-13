@@ -30,6 +30,7 @@ func (n *Node) PruneBlocks() {
 	// 🌟 探長防護 2：還沒長大，不需要修剪
 	// ==========================================
 	if bestHeight <= PruneDepth {
+		fmt.Printf("ℹ️ [Prune] 目前高度 %d，尚未超過保留深度 %d，暫不瘦身。\n", bestHeight, PruneDepth)
 		return
 	}
 
