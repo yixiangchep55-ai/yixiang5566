@@ -865,6 +865,10 @@ func (n *Node) RebuildUTXO() error {
 
 	// 0️⃣ 核心防護：確保主鏈視圖是最新的
 	n.UpdateChainFromBest()
+	if n.IsPrunedMode() && len(n.Chain) > 0 && n.Chain[0] != nil && n.Chain[0].Height != 0 {
+		fmt.Printf("ℹ️ [Full Rebuild] pruned 模式目前只保留從高度 %d 開始的區塊實體，沿用現有 UTXO 狀態。\n", n.Chain[0].Height)
+		return nil
+	}
 
 	// 1️⃣ 創建一個「純記憶體」的臨時帳本 (不要傳入 DB)
 	// 這樣在遍歷區塊時，Spend 和 Add 只會改記憶體，不會頻繁寫硬碟
@@ -1105,18 +1109,26 @@ func (n *Node) addTxsToMempool(txs []blockchain.Transaction) {
 }
 
 func (n *Node) IsOnMainChain(bi *BlockIndex) bool {
-	// 1. 高度超过主链长度，肯定不是
-	if bi.Height >= uint64(len(n.Chain)) {
+	if bi == nil || n.Best == nil || bi.Height > n.Best.Height {
 		return false
 	}
 
-	// 2. 取出主链该高度的区块
-	mainBlock := n.Chain[bi.Height]
-	mainHashHex := hex.EncodeToString(mainBlock.Hash)
+	// Archive 节点可直接从完整主链视图命中。
+	if bi.Height < uint64(len(n.Chain)) {
+		mainBlock := n.Chain[bi.Height]
+		if mainBlock != nil && hex.EncodeToString(mainBlock.Hash) == bi.Hash {
+			return true
+		}
+	}
 
-	// 3. 比较 Hash 是否一致
-	// 如果高度相同但 Hash 不同，说明 bi 是侧链区块
-	return mainHashHex == bi.Hash
+	// Pruned 节点的 n.Chain 可能只保留最近一段实体，退回到 Best 指针沿父链回溯判断。
+	for cur := n.Best; cur != nil && cur.Height >= bi.Height; cur = cur.Parent {
+		if cur.Height == bi.Height {
+			return cur.Hash == bi.Hash
+		}
+	}
+
+	return false
 }
 
 func (n *Node) GetResetChan() chan bool {

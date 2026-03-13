@@ -207,6 +207,23 @@ func (n *Node) validateReorgCandidate(oldChain, newChain []*BlockIndex) error {
 	return nil
 }
 
+// ActivateBestChainFromPrunedSync finalizes sync for a pruned node by
+// validating and applying only the retained branch delta on top of the current
+// persisted UTXO state.
+func (n *Node) ActivateBestChainFromPrunedSync(newTip *BlockIndex) error {
+	if newTip == nil {
+		return fmt.Errorf("nil best tip")
+	}
+
+	oldChain, newChain := n.reorgTo(newTip)
+	if err := n.validateReorgCandidate(oldChain, newChain); err != nil {
+		return err
+	}
+
+	n.rebuildChain(oldChain, newChain, newTip)
+	return nil
+}
+
 func (n *Node) attachOrphans(parentHash string) {
 	n.mu.Lock()
 	orphans := n.Orphans[parentHash]

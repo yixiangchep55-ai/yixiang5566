@@ -615,6 +615,25 @@ func (h *Handler) finishSyncing() bool {
 		newMainChain = append([]*blockchain.Block{cur.Block}, newMainChain...)
 		cur = cur.Parent
 	}
+	if len(newMainChain) > 0 && newMainChain[0].Height != 0 && h.Node.IsPrunedMode() {
+		if err := h.Node.ActivateBestChainFromPrunedSync(actualBest); err != nil {
+			fmt.Printf("❌ [Sync] pruned chain activation failed: %v\n", err)
+			h.Node.Unlock()
+			return false
+		}
+
+		fmt.Printf("ℹ️ [Sync] pruned 模式僅保留從高度 %d 開始的區塊實體，沿用持久化 UTXO 完成收尾。\n", newMainChain[0].Height)
+		h.Node.Unlock()
+
+		h.Node.Lock()
+		h.Node.SyncState = node.SyncSynced
+		h.Node.IsSyncing = false
+		h.Node.DB.Put("meta", "best", []byte(h.Node.Best.Hash))
+		fmt.Printf("✅ 同步完成！高度: %d\n", h.Node.Best.Height)
+		h.Node.Unlock()
+		h.broadcastCurrentMempool()
+		return true
+	}
 
 	// 檢查斷鏈
 	if len(newMainChain) == 0 || newMainChain[0].Height != 0 {
