@@ -660,6 +660,7 @@ func (h *Handler) finishSyncing() bool {
 	h.Node.DB.Put("meta", "best", []byte(h.Node.Best.Hash))
 	fmt.Printf("✅ 同步完成！高度: %d\n", h.Node.Best.Height)
 	h.Node.Unlock()
+	h.broadcastCurrentMempool()
 	return true
 }
 func (h *Handler) broadcastInvExcept(hash string, except *Peer) {
@@ -888,6 +889,18 @@ func (h *Handler) BroadcastLocalTx(tx blockchain.Transaction) {
 	log.Println("📣 broadcast local tx:", txid)
 
 	h.broadcastTxInv(txid)
+}
+
+func (h *Handler) broadcastCurrentMempool() {
+	allTxs := h.Node.Mempool.GetAll()
+	if len(allTxs) == 0 {
+		return
+	}
+
+	fmt.Printf("📢 [P2P] 同步完成後補廣播目前 Mempool 的 %d 筆交易...\n", len(allTxs))
+	for txid := range allTxs {
+		h.broadcastTxInv(txid)
+	}
 }
 
 func (h *Handler) handleGetHeaders(peer *Peer, msg *Message) {

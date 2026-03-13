@@ -152,7 +152,7 @@ func main() {
 	time.Sleep(5 * time.Second)
 
 	// 啟動 Node 主控挖礦
-	go nd.Mine()
+	//go nd.Mine()
 
 	fmt.Println("⛏ Miner started (Node-controlled) with address:", nd.MiningAddress)
 
