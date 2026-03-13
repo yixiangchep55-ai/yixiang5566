@@ -25,9 +25,9 @@ type Handler struct {
 }
 
 func (p *Peer) Close() {
-	if p.Conn != nil {
-		p.Conn.Close()
-	}
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.closeLocked()
 }
 
 func NewHandler(n *node.Node) *Handler {
@@ -35,6 +35,14 @@ func NewHandler(n *node.Node) *Handler {
 		Node:              n,
 		debugBlockTraffic: envBool("MYCOIN_DEBUG_BLOCKS"),
 		requestedBlocks:   make(map[string]time.Time),
+	}
+}
+
+func (h *Handler) pruneClosedPeersLocked() {
+	for nodeID, p := range h.Network.Peers {
+		if p == nil || p.IsClosed() {
+			delete(h.Network.Peers, nodeID)
+		}
 	}
 }
 
@@ -179,6 +187,7 @@ func (h *Handler) handleVerAck(peer *Peer, msg *Message) {
 	if peer.State >= StateVersionRecv {
 
 		h.Network.mu.Lock() // 🔒 上鎖
+		h.pruneClosedPeersLocked()
 
 		// =================================================================
 		// 🛑 企業級防禦 1：這是不是我自己？(防自我連線)
@@ -692,15 +701,18 @@ func (h *Handler) broadcastInvExcept(hash string, except *Peer) {
 	h.Network.mu.Lock()
 	defer h.Network.mu.Unlock()
 
-	for _, p := range h.Network.Peers {
-		if p != except && p.State == StateActive {
-			p.Send(Message{
-				Type: MsgInv,
-				Data: InvPayload{
-					Type:   "block",
-					Hashes: []string{hash},
-				},
-			})
+	for nodeID, p := range h.Network.Peers {
+		if p == nil || p == except || !p.IsActive() {
+			continue
+		}
+		if !p.Send(Message{
+			Type: MsgInv,
+			Data: InvPayload{
+				Type:   "block",
+				Hashes: []string{hash},
+			},
+		}) {
+			delete(h.Network.Peers, nodeID)
 		}
 	}
 }
@@ -713,15 +725,19 @@ func (h *Handler) broadcastInv(hash string) {
 	h.Network.mu.Lock()
 	defer h.Network.mu.Unlock()
 
-	for _, p := range h.Network.Peers {
-		if p.State == StateActive {
-			p.Send(Message{
-				Type: MsgInv,
-				Data: InvPayload{
-					Type:   "block",
-					Hashes: []string{hash},
-				},
-			})
+	h.pruneClosedPeersLocked()
+	for nodeID, p := range h.Network.Peers {
+		if p == nil || !p.IsActive() {
+			continue
+		}
+		if !p.Send(Message{
+			Type: MsgInv,
+			Data: InvPayload{
+				Type:   "block",
+				Hashes: []string{hash},
+			},
+		}) {
+			delete(h.Network.Peers, nodeID)
 		}
 	}
 }
@@ -889,13 +905,18 @@ func (h *Handler) broadcastTxInv(txid string) {
 	}
 
 	count := 0
+	h.pruneClosedPeersLocked()
 	for nodeID, p := range h.Network.Peers {
-		if p.State == StateActive {
-			if sourceNodeID != 0 && nodeID == sourceNodeID {
-				continue
-			}
-			p.Send(invMsg)
+		if p == nil || !p.IsActive() {
+			continue
+		}
+		if sourceNodeID != 0 && nodeID == sourceNodeID {
+			continue
+		}
+		if p.Send(invMsg) {
 			count++
+		} else {
+			delete(h.Network.Peers, nodeID)
 		}
 	}
 
@@ -1194,15 +1215,19 @@ func (h *Handler) BroadcastNewBlock(b *blockchain.Block) {
 
 	activeCount := 0
 	// 🌟 探長升級：把底線 '_' 換成 'nodeID'，把這張身分證拿出來秀！
+	h.pruneClosedPeersLocked()
 	for nodeID, p := range h.Network.Peers {
 		// 🔥 除錯：印出所有 Peer 的狀態 (加上超帥的 NodeID)
 		fmt.Printf("   -> 檢查 Peer %s [身分證: %d] (狀態: %d)\n", p.Addr, nodeID, p.State)
 
-		if p.State == StateActive {
-			p.Send(Message{
+		if p != nil && p.IsActive() {
+			if !p.Send(Message{
 				Type: MsgBlock,
 				Data: dto,
-			})
+			}) {
+				delete(h.Network.Peers, nodeID)
+				continue
+			}
 			fmt.Printf("   -> ✅ 已發送 MsgBlock 給 %s [身分證: %d]\n", p.Addr, nodeID)
 			activeCount++
 		}
@@ -1244,16 +1269,20 @@ func (h *Handler) RequestHistoricalBlock(hashHex string) {
 	fmt.Printf("🔍 [Query] 本地無區塊 %s，正在尋找全網的 archive 節點發出協尋...\n", hashHex[:8])
 
 	requestSent := false
-	for _, p := range h.Network.Peers {
+	h.pruneClosedPeersLocked()
+	for nodeID, p := range h.Network.Peers {
 		// 🌟 探長的高級調度：只向狀態活躍，且標明自己是 "archive" 的老大哥伸手！
-		if p.State == StateActive && node.NormalizeMode(p.Mode) == node.ModeArchive {
-			p.Send(Message{
+		if p != nil && p.IsActive() && node.NormalizeMode(p.Mode) == node.ModeArchive {
+			if !p.Send(Message{
 				Type: MsgGetData,
 				Data: GetDataPayload{
 					Type: "block",
 					Hash: hashHex,
 				},
-			})
+			}) {
+				delete(h.Network.Peers, nodeID)
+				continue
+			}
 			fmt.Printf("   -> 📡 已向全節點 %s 發送歷史區塊請求\n", p.Addr)
 			requestSent = true
 		}

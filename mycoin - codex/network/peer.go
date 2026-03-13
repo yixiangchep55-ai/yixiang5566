@@ -42,6 +42,14 @@ type Peer struct {
 	dec *json.Decoder
 }
 
+func (p *Peer) closeLocked() {
+	if p.Conn != nil {
+		_ = p.Conn.Close()
+		p.Conn = nil
+	}
+	p.State = StateInit
+}
+
 func NewPeer(conn net.Conn) *Peer {
 	dec := json.NewDecoder(conn)
 	dec.UseNumber()
@@ -54,23 +62,31 @@ func NewPeer(conn net.Conn) *Peer {
 	}
 }
 
-func (p *Peer) Send(msg Message) {
+func (p *Peer) Send(msg Message) bool {
 	// 🌟 探長交通管制：加上這把鎖，確保打招呼和發送區塊不會撞車！
 	p.mu.Lock()
 	defer p.mu.Unlock()
 
-	if p.Conn != nil {
-		err := p.enc.Encode(msg)
-		if err != nil {
-			log.Printf("⚠️ [Network] 發送訊息失敗給 %s: %v\n", p.Addr, err)
-		}
+	if p.Conn == nil {
+		return false
 	}
+
+	err := p.enc.Encode(msg)
+	if err != nil {
+		log.Printf("⚠️ [Network] 發送訊息失敗給 %s: %v\n", p.Addr, err)
+		p.closeLocked()
+		log.Println("❌ peer disconnected:", p.Addr)
+		return false
+	}
+
+	return true
 }
 
 func (p *Peer) ReadLoop(onMessage func(*Peer, *Message)) {
 	for {
 		var msg Message
 		if err := p.dec.Decode(&msg); err != nil {
+			p.Close()
 			log.Println("❌ peer disconnected:", p.Addr)
 			return
 		}
@@ -83,5 +99,13 @@ func (p *Peer) ReadLoop(onMessage func(*Peer, *Message)) {
 }
 
 func (p *Peer) IsClosed() bool {
+	p.mu.Lock()
+	defer p.mu.Unlock()
 	return p.Conn == nil
+}
+
+func (p *Peer) IsActive() bool {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return p.Conn != nil && p.State == StateActive
 }
