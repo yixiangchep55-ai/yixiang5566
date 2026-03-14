@@ -23,6 +23,7 @@ type Handler struct {
 	debugP2PTraffic   bool
 	requestMu         sync.Mutex
 	requestedBlocks   map[string]time.Time
+	requestedTxs      map[string]time.Time
 }
 
 func (p *Peer) Close() {
@@ -37,6 +38,7 @@ func NewHandler(n *node.Node) *Handler {
 		debugBlockTraffic: envBool("MYCOIN_DEBUG_BLOCKS"),
 		debugP2PTraffic:   envBool("MYCOIN_DEBUG_P2P"),
 		requestedBlocks:   make(map[string]time.Time),
+		requestedTxs:      make(map[string]time.Time),
 	}
 }
 
@@ -125,6 +127,33 @@ func (h *Handler) releaseBlockRequest(hash string) {
 
 	h.requestMu.Lock()
 	delete(h.requestedBlocks, hash)
+	h.requestMu.Unlock()
+}
+
+func (h *Handler) reserveTxRequest(txid string) bool {
+	if txid == "" {
+		return false
+	}
+
+	h.requestMu.Lock()
+	defer h.requestMu.Unlock()
+
+	now := time.Now()
+	if requestedAt, exists := h.requestedTxs[txid]; exists && now.Sub(requestedAt) < 5*time.Second {
+		return false
+	}
+
+	h.requestedTxs[txid] = now
+	return true
+}
+
+func (h *Handler) releaseTxRequest(txid string) {
+	if txid == "" {
+		return
+	}
+
+	h.requestMu.Lock()
+	delete(h.requestedTxs, txid)
 	h.requestMu.Unlock()
 }
 
@@ -292,15 +321,19 @@ func (h *Handler) handleInv(peer *Peer, msg *Message) {
 		}
 
 		for _, txid := range inv.Hashes {
-			if !h.Node.Mempool.Has(txid) {
-				fmt.Printf("📥 [P2P] 看到新交易 %s，準備發送 GetData...\n", txid[:8])
-				peer.Send(Message{
-					Type: MsgGetData,
-					Data: GetDataPayload{
-						Type: "tx",
-						Hash: txid,
-					},
-				})
+			if h.Node.Mempool.Has(txid) || !h.reserveTxRequest(txid) {
+				continue
+			}
+
+			fmt.Printf("📥 [P2P] 看到新交易 %s，準備發送 GetData...\n", txid[:8])
+			if !peer.Send(Message{
+				Type: MsgGetData,
+				Data: GetDataPayload{
+					Type: "tx",
+					Hash: txid,
+				},
+			}) {
+				h.releaseTxRequest(txid)
 			}
 		}
 	}
@@ -312,7 +345,9 @@ func (h *Handler) handleInv(peer *Peer, msg *Message) {
 func (h *Handler) handleGetData(peer *Peer, msg *Message) {
 	var req GetDataPayload
 	if err := decode(msg.Data, &req); err != nil {
-		fmt.Printf("❌ [Windows-Debug] 解碼 GetDataPayload 失敗！錯誤原因: %v\n", err)
+		if h.debugP2PTraffic {
+			fmt.Printf("❌ [Windows-Debug] 解碼 GetDataPayload 失敗！錯誤原因: %v\n", err)
+		}
 		return
 	}
 
@@ -334,14 +369,20 @@ func (h *Handler) handleGetData(peer *Peer, msg *Message) {
 
 	case "tx":
 		// ... 這裡是你剛才寫好的交易處理與日誌 (保持原樣) ...
-		fmt.Printf("🕵️ [Windows-Debug] 收到來自 %s 的 GetData，索取【交易】: %s\n", peer.Addr, req.Hash[:8])
+		if h.debugP2PTraffic {
+			fmt.Printf("🕵️ [Windows-Debug] 收到來自 %s 的 GetData，索取【交易】: %s\n", peer.Addr, req.Hash[:8])
+		}
 		tx, ok := h.Node.Mempool.Get(req.Hash)
 		if !ok {
-			fmt.Printf("⚠️ [Windows-Debug] 找不到交易 %s\n", req.Hash[:8])
+			if h.debugP2PTraffic {
+				fmt.Printf("⚠️ [Windows-Debug] 找不到交易 %s\n", req.Hash[:8])
+			}
 			return
 		}
 
-		fmt.Printf("📤 [P2P-交貨] 找到交易 %s，正在發送 MsgTx 給 %s...\n", req.Hash[:8], peer.Addr)
+		if h.debugP2PTraffic {
+			fmt.Printf("📤 [P2P-交貨] 找到交易 %s，正在發送 MsgTx 給 %s...\n", req.Hash[:8], peer.Addr)
+		}
 		peer.Send(Message{
 			Type: MsgTx,
 			Data: TxPayload{Tx: tx},
@@ -877,6 +918,8 @@ func (h *Handler) handleTx(peer *Peer, msg *Message) {
 		return
 	}
 
+	h.releaseTxRequest(tx.ID)
+
 	if h.Node.Mempool.Has(tx.ID) {
 		// 已經在 Mempool 裡了，代表我們之前收過，直接安靜下班，不要去煩 AddTx！
 		return
@@ -901,12 +944,16 @@ func (h *Handler) handleTx(peer *Peer, msg *Message) {
 }
 func (h *Handler) broadcastTxInv(txid string) {
 	// 🌟 顯影劑 1：確認有沒有進來
-	fmt.Println("🕵️ [Debug] 進入 broadcastTxInv，準備廣播交易:", txid[:8])
+	if h.debugP2PTraffic {
+		fmt.Println("🕵️ [Debug] 進入 broadcastTxInv，準備廣播交易:", txid[:8])
+	}
 
 	// 🛡️ 防禦 1：如果自己還沒同步完，不廣播
 	if h.Node.SyncState != node.SyncSynced {
 		// 🌟 顯影劑 2：抓到攔截者！
-		fmt.Printf("🚫 [Debug] 廣播被攔截！當前 SyncState 是 %v，不是 Synced!\n", h.Node.SyncState)
+		if h.debugP2PTraffic {
+			fmt.Printf("🚫 [Debug] 廣播被攔截！當前 SyncState 是 %v，不是 Synced!\n", h.Node.SyncState)
+		}
 		return
 	}
 
@@ -916,7 +963,9 @@ func (h *Handler) broadcastTxInv(txid string) {
 	defer h.Network.mu.Unlock()
 
 	// 🌟 顯影劑 3：看看有幾個鄰居
-	fmt.Printf("🕵️ [Debug] 網路中共有 %d 個鄰居，準備逐一檢查...\n", len(h.Network.Peers))
+	if h.debugP2PTraffic {
+		fmt.Printf("🕵️ [Debug] 網路中共有 %d 個鄰居，準備逐一檢查...\n", len(h.Network.Peers))
+	}
 
 	invMsg := Message{
 		Type: MsgInv,
@@ -944,7 +993,7 @@ func (h *Handler) broadcastTxInv(txid string) {
 
 	if count > 0 {
 		fmt.Printf("📢 [P2P] 已向 %d 個鄰居廣播交易清單 (Inv): %s\n", count, txid[:8])
-	} else {
+	} else if h.debugP2PTraffic {
 		// 🌟 顯影劑 4：鄰居都不理我？
 		fmt.Println("⚠️ [Debug] 廣播跑完了，但是 count 是 0！沒有符合條件的鄰居。")
 	}

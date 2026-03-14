@@ -1007,7 +1007,7 @@ func (n *Node) GetTransaction(txid string) (*blockchain.Transaction, *blockchain
 }
 
 func (n *Node) loadMempool() {
-	count := 0
+	loadedCount := 0
 
 	n.DB.Iterate("mempool", func(k, v []byte) {
 		txid := string(k)
@@ -1047,14 +1047,16 @@ func (n *Node) loadMempool() {
 			}
 		}
 
-		count++
+		loadedCount++
 	})
 
-	if removed := n.Mempool.PruneExpired(); removed > 0 {
+	removed := n.Mempool.PruneExpired()
+	remainingCount := len(n.Mempool.GetAll())
+	if removed > 0 {
 		log.Printf("🧹 [Mempool TTL] 啟動時清理了 %d 筆過期交易\n", removed)
 	}
 
-	log.Printf("💾 Loaded %d mempool transactions from DB\n", count)
+	log.Printf("💾 Loaded %d mempool transactions from DB (%d expired, %d remaining)\n", loadedCount, removed, remainingCount)
 }
 
 func (n *Node) maintainMempool() {
