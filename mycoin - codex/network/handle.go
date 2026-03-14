@@ -26,12 +26,6 @@ type Handler struct {
 	requestedTxs      map[string]time.Time
 }
 
-func (p *Peer) Close() {
-	p.mu.Lock()
-	defer p.mu.Unlock()
-	p.closeLocked()
-}
-
 func NewHandler(n *node.Node) *Handler {
 	return &Handler{
 		Node:              n,

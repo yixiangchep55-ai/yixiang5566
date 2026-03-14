@@ -20,10 +20,9 @@ const (
 type PeerInfo struct {
 	Addr     string `json:"addr"`
 	LastSeen int64  `json:"last_seen"`
-	// 🌟 探長建議：加上 NodeID，讓檔案更完整
-	NodeID  uint64 `json:"node_id,omitempty"`
-	Version int    `json:"version,omitempty"`
-	Height  int    `json:"height,omitempty"`
+	NodeID   uint64 `json:"node_id,omitempty"`
+	Version  int    `json:"version,omitempty"`
+	Height   int    `json:"height,omitempty"`
 }
 
 type Peer struct {
@@ -40,6 +39,10 @@ type Peer struct {
 	mu  sync.Mutex
 	enc *json.Encoder
 	dec *json.Decoder
+
+	onDisconnect func(*Peer)
+	disconnectMu sync.Mutex
+	disconnected bool
 }
 
 func (p *Peer) closeLocked() {
@@ -63,11 +66,9 @@ func NewPeer(conn net.Conn) *Peer {
 }
 
 func (p *Peer) Send(msg Message) bool {
-	// 🌟 探長交通管制：加上這把鎖，確保打招呼和發送區塊不會撞車！
 	p.mu.Lock()
-	defer p.mu.Unlock()
-
 	if p.Conn == nil {
+		p.mu.Unlock()
 		return false
 	}
 
@@ -75,9 +76,12 @@ func (p *Peer) Send(msg Message) bool {
 	if err != nil {
 		log.Printf("⚠️ [Network] 發送訊息失敗給 %s: %v\n", p.Addr, err)
 		p.closeLocked()
+		p.mu.Unlock()
+		p.notifyDisconnected()
 		log.Println("❌ peer disconnected:", p.Addr)
 		return false
 	}
+	p.mu.Unlock()
 
 	return true
 }
@@ -92,8 +96,6 @@ func (p *Peer) ReadLoop(onMessage func(*Peer, *Message)) {
 		}
 
 		p.LastSeen = time.Now().Unix()
-
-		// ⭐ 正确的调用方式：传入 peer + msg
 		onMessage(p, &msg)
 	}
 }
@@ -108,4 +110,26 @@ func (p *Peer) IsActive() bool {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	return p.Conn != nil && p.State == StateActive
+}
+
+func (p *Peer) Close() {
+	p.mu.Lock()
+	p.closeLocked()
+	p.mu.Unlock()
+	p.notifyDisconnected()
+}
+
+func (p *Peer) notifyDisconnected() {
+	p.disconnectMu.Lock()
+	if p.disconnected {
+		p.disconnectMu.Unlock()
+		return
+	}
+	p.disconnected = true
+	callback := p.onDisconnect
+	p.disconnectMu.Unlock()
+
+	if callback != nil {
+		callback(p)
+	}
 }
