@@ -43,6 +43,11 @@ type Peer struct {
 	onDisconnect func(*Peer)
 	disconnectMu sync.Mutex
 	disconnected bool
+
+	lastVersionMu      sync.Mutex
+	lastVersionHeight  uint64
+	lastVersionCumWork string
+	lastVersionAt      time.Time
 }
 
 func (p *Peer) closeLocked() {
@@ -132,4 +137,23 @@ func (p *Peer) notifyDisconnected() {
 	if callback != nil {
 		callback(p)
 	}
+}
+
+func (p *Peer) ShouldEvaluateVersion(height uint64, cumWork string) bool {
+	p.lastVersionMu.Lock()
+	defer p.lastVersionMu.Unlock()
+
+	now := time.Now()
+	if p.lastVersionHeight == height &&
+		p.lastVersionCumWork == cumWork &&
+		!p.lastVersionAt.IsZero() &&
+		now.Sub(p.lastVersionAt) < 5*time.Second {
+		p.lastVersionAt = now
+		return false
+	}
+
+	p.lastVersionHeight = height
+	p.lastVersionCumWork = cumWork
+	p.lastVersionAt = now
+	return true
 }

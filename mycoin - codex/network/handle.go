@@ -192,13 +192,17 @@ func (h *Handler) handleVersion(peer *Peer, msg *Message) {
 	// 🚨 探長智商升級包：轉換工作量並啟動動態切換！
 	// ==========================================================
 	peerWork := new(big.Int)
+	shouldEvaluateSync := peer.ShouldEvaluateVersion(v.Height, v.CumWork)
 	// 假設你的 CumWork 是 16 進位字串，如果解析失敗會回傳 false，這裡做個小保護
 	if _, ok := peerWork.SetString(v.CumWork, 16); !ok {
 		peerWork.SetInt64(0) // 如果對方傳來爛資料，當作 0 處理
 	}
 
 	// 呼叫我們的心血結晶，讓節點決定是不是該「畢業」了！
-	h.Node.EvaluateSyncStatus(v.Height, peerWork)
+
+	if shouldEvaluateSync {
+		h.Node.EvaluateSyncStatus(v.Height, peerWork)
+	}
 	// ==========================================================
 
 	// 发送 verack
