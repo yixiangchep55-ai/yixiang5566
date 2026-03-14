@@ -36,6 +36,11 @@ func (n *Node) connectBlock(block *blockchain.Block, parent *BlockIndex) bool {
 		return false
 	}
 
+	if err := n.validateBlockTimestamp(block, parent); err != nil {
+		log.Println("block timestamp validation failed:", err)
+		return false
+	}
+
 	work := computeWork(block.Target)
 	cumWork := new(big.Int).Add(parent.CumWorkInt, work)
 
