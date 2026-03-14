@@ -24,6 +24,8 @@ type Handler struct {
 	requestMu         sync.Mutex
 	requestedBlocks   map[string]time.Time
 	requestedTxs      map[string]time.Time
+	deferredTxMu      sync.Mutex
+	deferredLocalTxs  map[string]struct{}
 }
 
 func NewHandler(n *node.Node) *Handler {
@@ -33,6 +35,7 @@ func NewHandler(n *node.Node) *Handler {
 		debugP2PTraffic:   envBool("MYCOIN_DEBUG_P2P"),
 		requestedBlocks:   make(map[string]time.Time),
 		requestedTxs:      make(map[string]time.Time),
+		deferredLocalTxs:  make(map[string]struct{}),
 	}
 }
 
@@ -1003,10 +1006,52 @@ func (h *Handler) BroadcastLocalTx(tx blockchain.Transaction) {
 
 	log.Println("📣 broadcast local tx:", txid)
 
+	if h.Node.SyncState != node.SyncSynced {
+		h.deferLocalTxBroadcast(txid)
+		log.Println("馃搶 [P2P] local tx queued until sync completes:", txid)
+		return
+	}
+
 	h.broadcastTxInv(txid)
 }
 
+func (h *Handler) deferLocalTxBroadcast(txid string) {
+	h.deferredTxMu.Lock()
+	defer h.deferredTxMu.Unlock()
+	h.deferredLocalTxs[txid] = struct{}{}
+}
+
+func (h *Handler) takeDeferredLocalTxs() []string {
+	h.deferredTxMu.Lock()
+	defer h.deferredTxMu.Unlock()
+
+	if len(h.deferredLocalTxs) == 0 {
+		return nil
+	}
+
+	txids := make([]string, 0, len(h.deferredLocalTxs))
+	for txid := range h.deferredLocalTxs {
+		txids = append(txids, txid)
+		delete(h.deferredLocalTxs, txid)
+	}
+	return txids
+}
+
 func (h *Handler) broadcastCurrentMempool() {
+	broadcasted := make(map[string]struct{})
+
+	deferred := h.takeDeferredLocalTxs()
+	if len(deferred) > 0 {
+		fmt.Printf("馃摙 [P2P] 鍚屾瀹屾垚寰岃寤ｆ挱寤舵尲鐨?%d 绛嗘湰鍦颁氦鏄?..\n", len(deferred))
+		for _, txid := range deferred {
+			if !h.Node.Mempool.Has(txid) {
+				continue
+			}
+			h.broadcastTxInv(txid)
+			broadcasted[txid] = struct{}{}
+		}
+	}
+
 	allTxs := h.Node.Mempool.GetAll()
 	if len(allTxs) == 0 {
 		return
@@ -1014,6 +1059,9 @@ func (h *Handler) broadcastCurrentMempool() {
 
 	fmt.Printf("📢 [P2P] 同步完成後補廣播目前 Mempool 的 %d 筆交易...\n", len(allTxs))
 	for txid := range allTxs {
+		if _, ok := broadcasted[txid]; ok {
+			continue
+		}
 		h.broadcastTxInv(txid)
 	}
 }
