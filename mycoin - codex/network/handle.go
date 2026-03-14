@@ -20,6 +20,7 @@ type Handler struct {
 	Network           *Network
 	LocalVersion      VersionPayload
 	debugBlockTraffic bool
+	debugP2PTraffic   bool
 	requestMu         sync.Mutex
 	requestedBlocks   map[string]time.Time
 }
@@ -34,6 +35,7 @@ func NewHandler(n *node.Node) *Handler {
 	return &Handler{
 		Node:              n,
 		debugBlockTraffic: envBool("MYCOIN_DEBUG_BLOCKS"),
+		debugP2PTraffic:   envBool("MYCOIN_DEBUG_P2P"),
 		requestedBlocks:   make(map[string]time.Time),
 	}
 }
@@ -248,19 +250,27 @@ func (h *Handler) handleVerAck(peer *Peer, msg *Message) {
 // ======================
 func (h *Handler) handleInv(peer *Peer, msg *Message) {
 	// 🌟 探長強光 1：確認信件真的送達門口了！
-	fmt.Printf("🕵️ [Kali-Debug] 收到來自 %s 的 Inv 訊息！準備拆封...\n", peer.Addr)
+	if h.debugP2PTraffic {
+		fmt.Printf("🕵️ [Kali-Debug] 收到來自 %s 的 Inv 訊息！準備拆封...\n", peer.Addr)
+	}
 
 	var inv InvPayload
 	if err := decode(msg.Data, &inv); err != nil {
 		// 🚨 探長強光 2：抓出現行犯！印出具體的解碼錯誤！
-		fmt.Printf("❌ [Kali-Debug] 解碼 InvPayload 失敗！錯誤原因: %v\n", err)
+		if h.debugP2PTraffic {
+			fmt.Printf("❌ [Kali-Debug] 解碼 InvPayload 失敗！錯誤原因: %v\n", err)
+		}
 		// 順便把原始資料印出來看看長什麼樣子
-		fmt.Printf("❌ [Kali-Debug] 原始 msg.Data 內容: %+v\n", msg.Data)
+		if h.debugP2PTraffic {
+			fmt.Printf("❌ [Kali-Debug] 原始 msg.Data 內容: %+v\n", msg.Data)
+		}
 		return
 	}
 
 	// 🌟 探長強光 3：確認拆封成功！
-	fmt.Printf("✅ [Kali-Debug] 成功拆封 Inv，裡面有 %d 筆 %s 類型的資料\n", len(inv.Hashes), inv.Type)
+	if h.debugP2PTraffic {
+		fmt.Printf("✅ [Kali-Debug] 成功拆封 Inv，裡面有 %d 筆 %s 類型的資料\n", len(inv.Hashes), inv.Type)
+	}
 
 	switch inv.Type {
 	case "block":
@@ -835,27 +845,35 @@ func (h *Handler) handleTx(peer *Peer, msg *Message) {
 	// ==========================================
 	dataMap, ok := msg.Data.(map[string]interface{})
 	if !ok {
-		fmt.Println("❌ [Kali-Debug] 封包格式錯誤，不是 map[string]interface{}")
+		if h.debugP2PTraffic {
+			fmt.Println("❌ [Kali-Debug] 封包格式錯誤，不是 map[string]interface{}")
+		}
 		return
 	}
 
 	txBase64Str, ok := dataMap["tx"].(string)
 	if !ok {
-		fmt.Println("❌ [Kali-Debug] 找不到 'tx' 欄位，或者它不是字串！")
+		if h.debugP2PTraffic {
+			fmt.Println("❌ [Kali-Debug] 找不到 'tx' 欄位，或者它不是字串！")
+		}
 		return
 	}
 
 	// 1. 將 Base64 字串解碼回原始的二進位位元組 ([]byte)
 	txBytes, err := base64.StdEncoding.DecodeString(txBase64Str)
 	if err != nil {
-		fmt.Printf("❌ [Kali-Debug] Base64 解碼失敗！錯誤: %v\n", err)
+		if h.debugP2PTraffic {
+			fmt.Printf("❌ [Kali-Debug] Base64 解碼失敗！錯誤: %v\n", err)
+		}
 		return
 	}
 
 	// 2. 把 []byte 反序列化成真正的 Transaction 結構
 	tx, err := blockchain.DeserializeTransaction(txBytes)
 	if err != nil {
-		fmt.Printf("❌ [Kali-Debug] 交易反序列化失敗！錯誤: %v\n", err)
+		if h.debugP2PTraffic {
+			fmt.Printf("❌ [Kali-Debug] 交易反序列化失敗！錯誤: %v\n", err)
+		}
 		return
 	}
 
@@ -864,11 +882,15 @@ func (h *Handler) handleTx(peer *Peer, msg *Message) {
 		return
 	}
 
-	fmt.Printf("✅ [Kali-Debug] 成功解析交易 %s，準備交給大門保全 (AddTx)...\n", tx.ID[:8])
+	if h.debugP2PTraffic {
+		fmt.Printf("✅ [Kali-Debug] 成功解析交易 %s，準備交給大門保全 (AddTx)...\n", tx.ID[:8])
+	}
 
 	// 3. 交給 Node 處理！(走正門)
 	if ok := h.Node.AddTx(*tx, peer.NodeID); !ok {
-		fmt.Printf("❌ [Kali-Debug] 交易 %s 被 Node.AddTx 拒絕！\n", tx.ID[:8])
+		if h.debugP2PTraffic {
+			fmt.Printf("❌ [Kali-Debug] 交易 %s 被 Node.AddTx 拒絕！\n", tx.ID[:8])
+		}
 		return
 	}
 

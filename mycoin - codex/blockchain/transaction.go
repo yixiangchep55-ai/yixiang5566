@@ -1,16 +1,108 @@
 package blockchain
 
 import (
+	"container/list"
 	"crypto/sha256"
 	"encoding/binary"
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"os"
+	"strings"
+	"sync"
 	"time"
 
 	"github.com/btcsuite/btcd/btcec/v2"
 	ecdsa "github.com/btcsuite/btcd/btcec/v2/ecdsa"
 )
+
+var debugTxSigHash = blockchainEnvBool("MYCOIN_DEBUG_TXSIG")
+
+const sigVerifyCacheLimit = 10000
+
+type sigVerifyCacheEntry struct {
+	key string
+	ok  bool
+}
+
+type sigVerifyLRU struct {
+	mu    sync.Mutex
+	list  *list.List
+	items map[string]*list.Element
+	limit int
+}
+
+func newSigVerifyLRU(limit int) *sigVerifyLRU {
+	if limit <= 0 {
+		limit = 1
+	}
+
+	return &sigVerifyLRU{
+		list:  list.New(),
+		items: make(map[string]*list.Element),
+		limit: limit,
+	}
+}
+
+func (c *sigVerifyLRU) Get(key string) (bool, bool) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	elem, found := c.items[key]
+	if !found {
+		return false, false
+	}
+
+	c.list.MoveToFront(elem)
+	entry := elem.Value.(sigVerifyCacheEntry)
+	return entry.ok, true
+}
+
+func (c *sigVerifyLRU) Put(key string, ok bool) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	if elem, found := c.items[key]; found {
+		elem.Value = sigVerifyCacheEntry{key: key, ok: ok}
+		c.list.MoveToFront(elem)
+		return
+	}
+
+	elem := c.list.PushFront(sigVerifyCacheEntry{key: key, ok: ok})
+	c.items[key] = elem
+
+	if c.list.Len() <= c.limit {
+		return
+	}
+
+	oldest := c.list.Back()
+	if oldest == nil {
+		return
+	}
+
+	entry := oldest.Value.(sigVerifyCacheEntry)
+	delete(c.items, entry.key)
+	c.list.Remove(oldest)
+}
+
+var sigVerifyCache = newSigVerifyLRU(sigVerifyCacheLimit)
+
+func blockchainEnvBool(name string) bool {
+	switch strings.ToLower(strings.TrimSpace(os.Getenv(name))) {
+	case "1", "true", "yes", "on":
+		return true
+	default:
+		return false
+	}
+}
+
+func getSigVerifyCache(key string) (bool, bool) {
+	return sigVerifyCache.Get(key)
+}
+
+func putSigVerifyCache(key string, ok bool) {
+	sigVerifyCache.Put(key, ok)
+}
 
 // UTXO input
 type TxInput struct {
@@ -87,6 +179,11 @@ func (tx *Transaction) Verify() bool {
 		return true
 	}
 
+	cacheKey := tx.Hash()
+	if cached, found := getSigVerifyCache(cacheKey); found {
+		return cached
+	}
+
 	for i, in := range tx.Inputs {
 		// 1️⃣ 构造与签名时完全一致的摘要
 		data := tx.IDForSig(i)
@@ -95,31 +192,37 @@ func (tx *Transaction) Verify() bool {
 		// 2️⃣ 解析 DER 签名（hex → bytes → signature）
 		sigBytes, err := hex.DecodeString(in.Sig)
 		if err != nil {
+			putSigVerifyCache(cacheKey, false)
 			return false
 		}
 
 		sig, err := ecdsa.ParseDERSignature(sigBytes)
 		if err != nil {
+			putSigVerifyCache(cacheKey, false)
 			return false
 		}
 
 		// 3️⃣ 解析公钥
 		pubKeyBytes, err := hex.DecodeString(in.PubKey)
 		if err != nil {
+			putSigVerifyCache(cacheKey, false)
 			return false
 		}
 
 		pubKey, err := btcec.ParsePubKey(pubKeyBytes)
 		if err != nil {
+			putSigVerifyCache(cacheKey, false)
 			return false
 		}
 
 		// 4️⃣ 验签（注意：用 hash，不是 data）
 		if !sig.Verify(hash[:], pubKey) {
+			putSigVerifyCache(cacheKey, false)
 			return false
 		}
 	}
 
+	putSigVerifyCache(cacheKey, true)
 	return true
 }
 
@@ -157,7 +260,9 @@ func NewCoinbase(to string, reward int, genesisData string) *Transaction {
 func (tx *Transaction) IDForSig(idx int) []byte {
 	tmp := tx.cloneWithoutSign()
 	data, _ := json.Marshal(tmp)
-	fmt.Printf("\n🕵️ [Debug] IDForSig 準備 Hash 的 JSON: %s\n", string(data))
+	if debugTxSigHash {
+		fmt.Printf("\n🕵️ [Debug] IDForSig 準備 Hash 的 JSON: %s\n", string(data))
+	}
 	hash := sha256.Sum256(data)
 	return hash[:]
 }

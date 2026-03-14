@@ -43,6 +43,7 @@ func loadOrCreateMinerWallet(path string) *wallet.Wallet {
 func main() {
 	mode := flag.String("mode", node.ModeArchive, "Node mode: archive or pruned")
 	datadir := flag.String("datadir", "", "Directory for all node data")
+	maxPeers := flag.Int("maxpeers", 0, "Max active P2P peers (default: archive=8, pruned=4)")
 	flag.Parse()
 	*mode = node.NormalizeMode(*mode)
 
@@ -119,7 +120,17 @@ func main() {
 	// 升級一下超帥的啟動日誌！
 	fmt.Printf("🔎 Node will advertise itself with IP: %s:9001 and NodeID: %d\n", publicIP, handler.LocalVersion.NodeID)
 
-	pm := network.NewPeerManager(net, listenAddr, 16)
+	effectiveMaxPeers := *maxPeers
+	if effectiveMaxPeers <= 0 {
+		if *mode == node.ModePruned {
+			effectiveMaxPeers = 4
+		} else {
+			effectiveMaxPeers = 8
+		}
+	}
+	fmt.Printf("🌐 P2P max peers: %d\n", effectiveMaxPeers)
+
+	pm := network.NewPeerManager(net, listenAddr, effectiveMaxPeers)
 	net.PeerManager = pm
 	pm.Start() // 啟動監聽
 
@@ -152,7 +163,7 @@ func main() {
 	time.Sleep(5 * time.Second)
 
 	// 啟動 Node 主控挖礦
-	go nd.Mine()
+	//go nd.Mine()
 
 	fmt.Println("⛏ Miner started (Node-controlled) with address:", nd.MiningAddress)
 

@@ -18,6 +18,7 @@ import (
 	"os"
 	"path/filepath"
 	"strconv"
+	"strings"
 	"sync"
 	"time"
 )
@@ -28,7 +29,33 @@ const (
 	legacyModeArchive = "archival"
 )
 
+const (
+	defaultMempoolMaxTx           = 1000
+	defaultMempoolMaxBytesArchive = 16 * 1024 * 1024
+	defaultMempoolMaxBytesPruned  = 8 * 1024 * 1024
+	defaultMempoolTTL             = time.Hour
+)
+
 var ErrPrunedData = errors.New("requested data is pruned")
+var debugMempoolFlow = nodeEnvBool("MYCOIN_DEBUG_MEMPOOL")
+
+func nodeEnvBool(name string) bool {
+	switch strings.ToLower(strings.TrimSpace(os.Getenv(name))) {
+	case "1", "true", "yes", "on":
+		return true
+	default:
+		return false
+	}
+}
+
+func newNodeMempool(mode string, db *database.BoltDB) *mempool.Mempool {
+	maxBytes := defaultMempoolMaxBytesArchive
+	if NormalizeMode(mode) == ModePruned {
+		maxBytes = defaultMempoolMaxBytesPruned
+	}
+
+	return mempool.NewMempool(defaultMempoolMaxTx, maxBytes, defaultMempoolTTL, db)
+}
 
 // --------------------
 // Node = 验证 + 链管理
@@ -160,7 +187,7 @@ func NewNode(mode string, datadir string) *Node {
 	n := &Node{
 		Mode:    NormalizeMode(mode),
 		Chain:   []*blockchain.Block{},
-		Mempool: mempool.NewMempool(1000, db),
+		Mempool: newNodeMempool(mode, db),
 		UTXO:    blockchain.NewUTXOSet(db),
 		Target:  target,
 		Reward:  500,
@@ -194,6 +221,8 @@ func NewNode(mode string, datadir string) *Node {
 	// 順便把 n.Best 設為創世，這樣同步才有一個起點
 	n.Best = n.Blocks[gHash]
 	// ==========================================================
+
+	go n.maintainMempool()
 
 	return n
 }
@@ -290,37 +319,51 @@ func (n *Node) AddTx(tx blockchain.Transaction, fromNodeID uint64) bool {
 		fmt.Printf("🚫 [Security] 交易 %s 手續費太低 (%d < %d)，直接在門外踢掉！\n", tx.ID[:8], fee, MinRelayFee)
 		return false
 	}
-	fmt.Println("👉 [X-Ray] 準備鎖定 n.mu 大門...")
+	if debugMempoolFlow {
+		fmt.Println("👉 [X-Ray] 準備鎖定 n.mu 大門...")
+	}
 	n.mu.Lock()
 	defer n.mu.Unlock()
-	fmt.Println("👉 [X-Ray] 成功鎖定 n.mu，開始執行 VerifyTx...")
+	if debugMempoolFlow {
+		fmt.Println("👉 [X-Ray] 成功鎖定 n.mu，開始執行 VerifyTx...")
+	}
 
 	if err := VerifyTx(tx, n.UTXO, n.Mempool.Txs); err != nil {
 		fmt.Printf("❌ 交易驗證失敗被拒絕 (%s): %v\n", tx.ID, err)
 		return false
 	}
 
-	fmt.Println("👉 [X-Ray] VerifyTx 通過，開始執行 Mempool.Has...")
+	if debugMempoolFlow {
+		fmt.Println("👉 [X-Ray] VerifyTx 通過，開始執行 Mempool.Has...")
+	}
 	if n.Mempool.Has(tx.ID) {
 		return false
 	}
 
-	fmt.Println("👉 [X-Ray] Mempool.Has 通過，開始執行 Mempool.HasDoubleSpend...")
+	if debugMempoolFlow {
+		fmt.Println("👉 [X-Ray] Mempool.Has 通過，開始執行 Mempool.HasDoubleSpend...")
+	}
 	if n.Mempool.HasDoubleSpend(&tx) {
 		fmt.Printf("❌ 交易被拒絕：與 Mempool 內的交易發生雙花衝突 (%s)\n", tx.ID)
 		return false
 	}
 
-	fmt.Println("👉 [X-Ray] Mempool.HasDoubleSpend 通過，開始進入 AddTxRBF 黑洞...")
+	if debugMempoolFlow {
+		fmt.Println("👉 [X-Ray] Mempool.HasDoubleSpend 通過，開始進入 AddTxRBF 黑洞...")
+	}
 	ok := n.Mempool.AddTxRBF(tx.ID, tx.Serialize(), n.UTXO, fromNodeID)
 
-	fmt.Println("👉 [X-Ray] 成功逃出 AddTxRBF 黑洞！")
+	if debugMempoolFlow {
+		fmt.Println("👉 [X-Ray] 成功逃出 AddTxRBF 黑洞！")
+	}
 	if !ok {
 		fmt.Println("❌ 交易被 Mempool 拒絕 (可能手續費太低或 RBF 失敗)")
 		return false
 	}
 
-	fmt.Printf("📥 ✅ [X-Ray] 交易 %s 成功進入 Mempool，等待打包\n", tx.ID)
+	if debugMempoolFlow {
+		fmt.Printf("📥 ✅ [X-Ray] 交易 %s 成功進入 Mempool，等待打包\n", tx.ID)
+	}
 
 	return true
 
@@ -536,6 +579,7 @@ func (n *Node) rebuildChain(oldChain, newChain []*BlockIndex, newTip *BlockIndex
 	for txid, bytes := range txsToRestore {
 		// 🚀 關鍵防護：直接塞回底層 Map，不觸發複雜驗證，完美避開死鎖！
 		n.Mempool.Txs[txid] = bytes
+		n.Mempool.TotalBytes += len(bytes)
 	}
 
 	// ============================================================
@@ -719,7 +763,7 @@ func (n *Node) Start() {
 		n.UTXO.AddrIndex[u.To] = append(n.UTXO.AddrIndex[u.To], key)
 	})
 	// ... (Mempool 初始代碼) ...
-	n.Mempool = mempool.NewMempool(1000, n.DB)
+	n.Mempool = newNodeMempool(n.Mode, n.DB)
 	n.loadMempool()
 	n.IsSyncing = true
 
@@ -970,6 +1014,7 @@ func (n *Node) loadMempool() {
 
 		// 放入内存 mempool
 		n.Mempool.Txs[txid] = v
+		n.Mempool.TotalBytes += len(v)
 
 		timeBytes := n.DB.Get("mempool_times", txid)
 		if len(timeBytes) > 0 {
@@ -1005,7 +1050,25 @@ func (n *Node) loadMempool() {
 		count++
 	})
 
+	if removed := n.Mempool.PruneExpired(); removed > 0 {
+		log.Printf("🧹 [Mempool TTL] 啟動時清理了 %d 筆過期交易\n", removed)
+	}
+
 	log.Printf("💾 Loaded %d mempool transactions from DB\n", count)
+}
+
+func (n *Node) maintainMempool() {
+	ticker := time.NewTicker(time.Minute)
+	defer ticker.Stop()
+
+	for range ticker.C {
+		if n.Mempool == nil {
+			continue
+		}
+		if removed := n.Mempool.PruneExpired(); removed > 0 {
+			log.Printf("🧹 [Mempool TTL] 已清理 %d 筆過期交易\n", removed)
+		}
+	}
 }
 
 func (n *Node) BroadcastNewBlock(b *blockchain.Block) {

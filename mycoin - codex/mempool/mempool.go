@@ -11,15 +11,18 @@ import (
 )
 
 type Mempool struct {
-	Txs      map[string][]byte
-	mu       sync.Mutex
-	Spent    map[string]string
-	Parents  map[string][]string // child → parents
-	Children map[string][]string // parent → children
-	Sources  map[string]uint64
-	MaxTx    int
-	DB       *database.BoltDB
-	Times    map[string]int64 // 👈 探長的打卡鐘：TxID -> Unix 時間戳
+	Txs        map[string][]byte
+	mu         sync.Mutex
+	Spent      map[string]string
+	Parents    map[string][]string // child → parents
+	Children   map[string][]string // parent → children
+	Sources    map[string]uint64
+	MaxTx      int
+	MaxBytes   int
+	TotalBytes int
+	TxTTL      time.Duration
+	DB         *database.BoltDB
+	Times      map[string]int64 // 👈 探長的打卡鐘：TxID -> Unix 時間戳
 
 }
 
@@ -27,6 +30,7 @@ func (m *Mempool) Reset() {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.Txs = make(map[string][]byte)
+	m.TotalBytes = 0
 
 	// 🛡️ 探長加碼：清空的時候也要重新給一個新櫃子
 	m.Times = make(map[string]int64)
@@ -37,7 +41,7 @@ func (m *Mempool) Reset() {
 	m.Children = make(map[string][]string)
 }
 
-func NewMempool(maxTx int, db *database.BoltDB) *Mempool {
+func NewMempool(maxTx int, maxBytes int, txTTL time.Duration, db *database.BoltDB) *Mempool {
 	return &Mempool{
 		Times: make(map[string]int64),
 		Txs:   make(map[string][]byte),
@@ -49,6 +53,8 @@ func NewMempool(maxTx int, db *database.BoltDB) *Mempool {
 		Parents:  make(map[string][]string),
 		Children: make(map[string][]string),
 		MaxTx:    maxTx,
+		MaxBytes: maxBytes,
+		TxTTL:    txTTL,
 		DB:       db,
 	}
 }
@@ -66,6 +72,8 @@ func (m *Mempool) Has(txid string) bool {
 func (m *Mempool) AddTxRBF(txid string, txBytes []byte, utxo *blockchain.UTXOSet, fromNodeID uint64) bool {
 	m.mu.Lock()
 	defer m.mu.Unlock()
+
+	m.pruneExpiredUnsafe(time.Now())
 
 	newTx, err := blockchain.DeserializeTransaction(txBytes)
 	if err != nil {
@@ -97,18 +105,8 @@ func (m *Mempool) AddTxRBF(txid string, txBytes []byte, utxo *blockchain.UTXOSet
 		}
 	}
 
-	// 🔥 Mempool Eviction (汰弱留強)
-	if len(m.Txs) >= m.MaxTx {
-		lowestTxid, lowestFee := m.findLowestFeeTx(utxo)
-		if lowestTxid == "" || newFee <= lowestFee {
-			return false
-		}
-
-		m.removeTxUnsafe(lowestTxid)
-
-		// 🚀 修改點：讓日誌印出人類看得懂的小數點
-		log.Printf("🧹 [Mempool Eviction] 踢掉低手續費交易: %s (Fee: %.2f) -> 換入新交易: %s (Fee: %.2f)\n",
-			lowestTxid[:8], float64(lowestFee)/100.0, txid[:8], float64(newFee)/100.0)
+	if !m.ensureCapacityUnsafe(txid, len(txBytes), newFee, utxo) {
+		return false
 	}
 
 	m.addTxUnsafe(txid, newTx, txBytes, fromNodeID)
@@ -133,6 +131,8 @@ func (m *Mempool) GetAll() map[string][]byte {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
+	m.pruneExpiredUnsafe(time.Now())
+
 	out := make(map[string][]byte, len(m.Txs))
 	for k, v := range m.Txs {
 		out[k] = v
@@ -145,11 +145,19 @@ func (m *Mempool) Clear() {
 	defer m.mu.Unlock()
 
 	m.Txs = make(map[string][]byte)
+	m.TotalBytes = 0
 	m.Spent = make(map[string]string)
 	m.Times = make(map[string]int64)    // 👈 探長提醒：加上這行
 	m.Sources = make(map[string]uint64) // 👈 探長提醒：加上這行
 	m.Parents = make(map[string][]string)
 	m.Children = make(map[string][]string)
+}
+
+func (m *Mempool) PruneExpired() int {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	return m.pruneExpiredUnsafe(time.Now())
 }
 
 func (m *Mempool) HasDoubleSpend(tx *blockchain.Transaction) bool {
@@ -186,6 +194,7 @@ func (m *Mempool) addTxUnsafe(
 	fromNodeID uint64, // 👈 已經加上了
 ) {
 	m.Txs[txid] = txBytes
+	m.TotalBytes += len(txBytes)
 
 	if m.DB != nil {
 		m.DB.Put("mempool", txid, txBytes)
@@ -269,6 +278,11 @@ func (m *Mempool) removeTxUnsafe(txid string) {
 			delete(m.Spent, key)
 		}
 	}
+	if m.TotalBytes >= len(txBytes) {
+		m.TotalBytes -= len(txBytes)
+	} else {
+		m.TotalBytes = 0
+	}
 	delete(m.Txs, txid)
 	delete(m.Times, txid)
 	delete(m.Sources, txid)
@@ -328,6 +342,53 @@ func (m *Mempool) findLowestFeeTx(utxo *blockchain.UTXOSet) (string, int) {
 	}
 
 	return lowestTxid, lowestFee
+}
+
+func (m *Mempool) pruneExpiredUnsafe(now time.Time) int {
+	if m.TxTTL <= 0 {
+		return 0
+	}
+
+	cutoff := now.Add(-m.TxTTL).Unix()
+	removed := 0
+	for txid, enterTime := range m.Times {
+		if enterTime > 0 && enterTime <= cutoff {
+			m.removeTxUnsafe(txid)
+			removed++
+		}
+	}
+
+	return removed
+}
+
+func (m *Mempool) ensureCapacityUnsafe(newTxID string, newSize int, newFee int, utxo *blockchain.UTXOSet) bool {
+	if m.MaxBytes > 0 && newSize > m.MaxBytes {
+		return false
+	}
+
+	for (m.MaxTx > 0 && len(m.Txs) >= m.MaxTx) || (m.MaxBytes > 0 && m.TotalBytes+newSize > m.MaxBytes) {
+		needCount := m.MaxTx > 0 && len(m.Txs) >= m.MaxTx
+		needBytes := m.MaxBytes > 0 && m.TotalBytes+newSize > m.MaxBytes
+
+		lowestTxid, lowestFee := m.findLowestFeeTx(utxo)
+		if lowestTxid == "" || lowestTxid == newTxID || newFee <= lowestFee {
+			return false
+		}
+
+		m.removeTxUnsafe(lowestTxid)
+
+		reason := "size"
+		if needBytes && !needCount {
+			reason = "memory"
+		} else if needBytes && needCount {
+			reason = "size+memory"
+		}
+
+		log.Printf("🧹 [Mempool Eviction] 因 %s 壓力踢掉交易: %s (Fee: %.2f) -> 換入新交易: %s (Fee: %.2f)\n",
+			reason, lowestTxid[:8], float64(lowestFee)/100.0, newTxID[:8], float64(newFee)/100.0)
+	}
+
+	return true
 }
 
 func (m *Mempool) Remove(txid string) {
