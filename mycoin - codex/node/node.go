@@ -17,6 +17,7 @@ import (
 	"mycoin/utils"
 	"os"
 	"path/filepath"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -972,6 +973,49 @@ func (n *Node) AddOrphan(blk *blockchain.Block) {
 	n.mu.Lock()
 	defer n.mu.Unlock()
 	n.addOrphanLocked(blk)
+}
+
+func (n *Node) GetOrphanBlocks() []*blockchain.Block {
+	n.mu.Lock()
+	defer n.mu.Unlock()
+
+	blocks := make([]*blockchain.Block, 0)
+	seen := make(map[string]struct{})
+	for _, list := range n.Orphans {
+		for _, blk := range list {
+			if blk != nil {
+				hashHex := hex.EncodeToString(blk.Hash)
+				if _, exists := seen[hashHex]; exists {
+					continue
+				}
+				seen[hashHex] = struct{}{}
+				blocks = append(blocks, blk)
+			}
+		}
+	}
+
+	for _, bi := range n.Blocks {
+		if bi == nil || bi.Block == nil || bi.Height == 0 {
+			continue
+		}
+		if n.IsOnMainChain(bi) {
+			continue
+		}
+		if _, exists := seen[bi.Hash]; exists {
+			continue
+		}
+		seen[bi.Hash] = struct{}{}
+		blocks = append(blocks, bi.Block)
+	}
+
+	sort.Slice(blocks, func(i, j int) bool {
+		if blocks[i].Height == blocks[j].Height {
+			return blocks[i].Timestamp > blocks[j].Timestamp
+		}
+		return blocks[i].Height > blocks[j].Height
+	})
+
+	return blocks
 }
 
 func (n *Node) GetTxIndex(txid string) (*blockchain.TxIndexEntry, error) {

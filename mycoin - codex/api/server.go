@@ -1,304 +1,612 @@
 package api
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
+	"io"
 	"mycoin/indexer"
 	"net/http"
+	"os"
+	"sort"
 	"strings"
+	"time"
 )
 
-// StartServer 啟動區塊瀏覽器的 API 伺服器
+const (
+	localNodeRPCURL   = "http://localhost:8081/rpc"
+	localWalletRPCURL = "http://localhost:8082/wallet"
+	defaultRPCPort    = "8081"
+)
+
+type RemoteNode struct {
+	Name string `json:"name"`
+	Host string `json:"host"`
+	RPC  string `json:"rpc"`
+}
+
+type RemoteNodeStatus struct {
+	Name     string `json:"name"`
+	Host     string `json:"host"`
+	Online   bool   `json:"online"`
+	LastSeen string `json:"last_seen"`
+}
+
+type jsonRPCResponse struct {
+	Result json.RawMessage `json:"result"`
+	Error  interface{}     `json:"error"`
+}
+
+var (
+	apiHTTPClient = &http.Client{Timeout: 3 * time.Second}
+	explorerNodes = loadExplorerNodes()
+)
+
 func StartServer(port string) {
-	// 🌟 設立兩個不同的路由 (櫃檯)
-	http.HandleFunc("/api/blocks", getMainBlocks)       // 主鏈專用
-	http.HandleFunc("/api/orphans", getOrphanBlocks)    // 孤塊專用
-	http.HandleFunc("/api/address/", getAddressBalance) // 💼 錢包查詢專用
-	http.HandleFunc("/api/transaction", sendTransaction)
-	http.HandleFunc("/api/estimatefee", getEstimateFee) // 📊 自動預測手續費
-	http.HandleFunc("/api/mempool", getMempool)
-	http.HandleFunc("/api/tx/", getTransactionDetails)
+	mux := http.NewServeMux()
+	mux.HandleFunc("/api/blocks", getMainBlocks)
+	mux.HandleFunc("/api/orphans", getOrphanBlocks)
+	mux.HandleFunc("/api/address/", getAddressBalance)
+	mux.HandleFunc("/api/transaction", sendTransaction)
+	mux.HandleFunc("/api/estimatefee", getEstimateFee)
+	mux.HandleFunc("/api/mempool", getMempool)
+	mux.HandleFunc("/api/block/", getBlockDetails)
+	mux.HandleFunc("/api/tx/", getTransactionDetails)
+	mux.HandleFunc("/api/nodes", getNodes)
 
-	fmt.Printf("🌐 [API] 區塊瀏覽器 API 伺服器已啟動於 http://localhost:%s\n", port)
-	err := http.ListenAndServe(":"+port, nil)
-	if err != nil {
-		fmt.Println("❌ [API] 伺服器啟動失敗:", err)
+	fmt.Printf("[API] Explorer API listening at http://localhost:%s\n", port)
+	if err := http.ListenAndServe(":"+port, mux); err != nil {
+		fmt.Println("[API] server failed:", err)
 	}
 }
 
-// 櫃檯 1：專門獲取「主鏈區塊」
 func getMainBlocks(w http.ResponseWriter, r *http.Request) {
-	w.Header().Set("Access-Control-Allow-Origin", "*")
-	w.Header().Set("Content-Type", "application/json")
-
-	if indexer.DB == nil {
-		http.Error(w, `{"error": "資料庫未連線"}`, http.StatusInternalServerError)
+	if !allowAPIRequest(w, r, http.MethodGet) {
 		return
 	}
 
-	var blocks []indexer.BlockRecord
-	// 🚀 魔法 SQL 升級：加上 Where 條件過濾，只找 IsMainChain = true 的！
-	result := indexer.DB.Where("is_main_chain = ?", true).Order("height desc").Limit(15).Find(&blocks)
-
-	if result.Error != nil {
-		http.Error(w, `{"error": "查詢失敗"}`, http.StatusInternalServerError)
+	countResult, rpcErr, err := rpcCall(localNodeRPCURL, "getblockcount", []interface{}{})
+	if err != nil {
+		writeJSON(w, http.StatusBadGateway, map[string]string{
+			"error": "node RPC is unavailable",
+		})
 		return
 	}
-	json.NewEncoder(w).Encode(blocks)
+	if rpcErr != nil {
+		writeJSON(w, http.StatusBadGateway, map[string]string{
+			"error": fmt.Sprintf("%v", rpcErr),
+		})
+		return
+	}
+
+	var bestHeight int
+	if err := json.Unmarshal(countResult, &bestHeight); err != nil {
+		writeJSON(w, http.StatusBadGateway, map[string]string{
+			"error": "node RPC returned an invalid block height",
+		})
+		return
+	}
+
+	type blockSummary struct {
+		Height    int     `json:"Height"`
+		Hash      string  `json:"Hash"`
+		Miner     string  `json:"Miner"`
+		Timestamp int64   `json:"Timestamp"`
+		TxCount   int     `json:"TxCount"`
+		Target    string  `json:"Target"`
+		Reward    float64 `json:"Reward"`
+	}
+
+	type rpcBlock struct {
+		Height       int             `json:"height"`
+		Hash         string          `json:"hash"`
+		Miner        string          `json:"miner"`
+		Timestamp    int64           `json:"timestamp"`
+		Target       string          `json:"target"`
+		Reward       float64         `json:"reward"`
+		Transactions json.RawMessage `json:"transactions"`
+	}
+
+	startHeight := bestHeight - 14
+	if startHeight < 0 {
+		startHeight = 0
+	}
+
+	blocks := make([]blockSummary, 0, bestHeight-startHeight+1)
+	for height := bestHeight; height >= startHeight; height-- {
+		hashResult, rpcErr, err := rpcCall(localNodeRPCURL, "getblockhash", []interface{}{height})
+		if err != nil || rpcErr != nil {
+			continue
+		}
+
+		var blockHash string
+		if err := json.Unmarshal(hashResult, &blockHash); err != nil || blockHash == "" {
+			continue
+		}
+
+		blockResult, rpcErr, err := rpcCall(localNodeRPCURL, "getblock", []interface{}{blockHash})
+		if err != nil || rpcErr != nil {
+			continue
+		}
+
+		var block rpcBlock
+		if err := json.Unmarshal(blockResult, &block); err != nil {
+			continue
+		}
+
+		var txs []json.RawMessage
+		_ = json.Unmarshal(block.Transactions, &txs)
+
+		blocks = append(blocks, blockSummary{
+			Height:    block.Height,
+			Hash:      block.Hash,
+			Miner:     block.Miner,
+			Timestamp: block.Timestamp,
+			TxCount:   len(txs),
+			Target:    block.Target,
+			Reward:    block.Reward,
+		})
+	}
+
+	writeJSON(w, http.StatusOK, blocks)
 }
 
-// 櫃檯 2：專門獲取「孤塊 (Orphans)」
 func getOrphanBlocks(w http.ResponseWriter, r *http.Request) {
-	w.Header().Set("Access-Control-Allow-Origin", "*")
-	w.Header().Set("Content-Type", "application/json")
-
-	if indexer.DB == nil {
-		http.Error(w, `{"error": "資料庫未連線"}`, http.StatusInternalServerError)
+	if !allowAPIRequest(w, r, http.MethodGet) {
 		return
 	}
 
-	var blocks []indexer.BlockRecord
-	// 🚀 魔法 SQL 升級：加上 Where 條件過濾，只找 IsMainChain = false 的！
-	result := indexer.DB.Where("is_main_chain = ?", false).Order("height desc").Limit(15).Find(&blocks)
-
-	if result.Error != nil {
-		http.Error(w, `{"error": "查詢失敗"}`, http.StatusInternalServerError)
+	result, rpcErr, err := rpcCall(localNodeRPCURL, "getorphans", []interface{}{})
+	if err != nil || rpcErr != nil {
+		writeJSON(w, http.StatusOK, []interface{}{})
 		return
 	}
-	json.NewEncoder(w).Encode(blocks)
+
+	if len(result) == 0 || bytes.Equal(bytes.TrimSpace(result), []byte("null")) {
+		writeJSON(w, http.StatusOK, []interface{}{})
+		return
+	}
+
+	var payload interface{}
+	if err := json.Unmarshal(result, &payload); err != nil {
+		writeJSON(w, http.StatusOK, []interface{}{})
+		return
+	}
+
+	writeJSON(w, http.StatusOK, payload)
 }
 
-// 💼 負責處理錢包查詢的函數 (GORM 智慧型結算 + 終端機偵測版)
 func getAddressBalance(w http.ResponseWriter, r *http.Request) {
-	w.Header().Set("Access-Control-Allow-Origin", "*")
-	w.Header().Set("Content-Type", "application/json")
-	if r.Method == "OPTIONS" {
+	if !allowAPIRequest(w, r, http.MethodGet) {
 		return
 	}
 
-	address := strings.TrimPrefix(r.URL.Path, "/api/address/")
+	if indexer.DB == nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{
+			"error": "indexer is not enabled",
+		})
+		return
+	}
+
+	address := strings.TrimSpace(strings.TrimPrefix(r.URL.Path, "/api/address/"))
 	if address == "" {
-		http.Error(w, "請提供錢包地址", http.StatusBadRequest)
+		writeJSON(w, http.StatusBadRequest, map[string]string{
+			"error": "address is required",
+		})
 		return
 	}
 
-	var totalIn, totalOut float64
-
-	// 1. 查詢總收入 (資料庫裡存的是 500, 150 這種整數)
-	errIn := indexer.DB.Model(&indexer.AddressLedger{}).
+	var totalIn uint64
+	if err := indexer.DB.Model(&indexer.AddressLedger{}).
 		Where("address = ? AND type = ?", address, "IN").
-		Select("COALESCE(SUM(amount), 0)").Scan(&totalIn).Error
-	if errIn != nil {
-		fmt.Println("❌ [查水表] 查詢收入時發生錯誤:", errIn)
-		// 甚至可以回傳一個 API 錯誤
-		http.Error(w, `{"error": "查詢收入失敗"}`, http.StatusInternalServerError)
+		Select("COALESCE(SUM(amount), 0)").
+		Scan(&totalIn).Error; err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{
+			"error": "failed to query incoming value",
+		})
 		return
 	}
 
-	// 2. 查詢總支出
-	errOut := indexer.DB.Model(&indexer.AddressLedger{}).
+	var totalOut uint64
+	if err := indexer.DB.Model(&indexer.AddressLedger{}).
 		Where("address = ? AND type = ?", address, "OUT").
-		Select("COALESCE(SUM(amount), 0)").Scan(&totalOut).Error
-	// 🚀 同理：也要「使用」這個 errOut
-	if errOut != nil {
-		fmt.Println("❌ [查水表] 查詢支出時發生錯誤:", errOut)
-		http.Error(w, `{"error": "查詢支出失敗"}`, http.StatusInternalServerError)
+		Select("COALESCE(SUM(amount), 0)").
+		Scan(&totalOut).Error; err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{
+			"error": "failed to query outgoing value",
+		})
 		return
 	}
-
-	// ==========================================
-	// 🕵️ 大偵探的單位還原：從 YiCent 轉回 YiCoin
-	// ==========================================
-	displayIn := totalIn / 100.0
-	displayOut := totalOut / 100.0
-	balance := (totalIn - totalOut) / 100.0
-
-	// 修改終端機日誌，讓它也顯示小數點
-	fmt.Printf("🔍 [查水表] 地址: %s | 總收入: %.2f | 總支出: %.2f | 餘額: %.2f\n",
-		address[:8]+"...", displayIn, displayOut, balance)
 
 	message := ""
-	if totalIn == 0 {
+	if totalIn == 0 && totalOut == 0 {
 		message = "This address has no transaction history yet."
 	}
 
-	// 回傳給 Vue 的 Balance 現在是漂亮的 5.00 了！
-	json.NewEncoder(w).Encode(map[string]interface{}{
+	writeJSON(w, http.StatusOK, map[string]interface{}{
 		"Address": address,
-		"Balance": balance,
+		"Balance": float64(totalIn-totalOut) / 100.0,
 		"Message": message,
 	})
 }
 
-// 💸 負責處理前端轉帳請求的函數
 func sendTransaction(w http.ResponseWriter, r *http.Request) {
-	// 1. 允許前端跨域連線 (CORS)
-	w.Header().Set("Access-Control-Allow-Origin", "*")
-	w.Header().Set("Access-Control-Allow-Methods", "POST, OPTIONS")
-	w.Header().Set("Access-Control-Allow-Headers", "Content-Type")
-	if r.Method == "OPTIONS" {
+	if !allowAPIRequest(w, r, http.MethodPost) {
 		return
 	}
 
-	// 2. 解析 Vue 前端傳來的 JSON 資料 (加入 Fee 欄位)
-	var txReq struct {
+	var req struct {
 		To     string  `json:"to"`
 		Amount float64 `json:"amount"`
-		Fee    float64 `json:"fee"` // 👈 大偵探加碼：接收手續費！
+		Fee    float64 `json:"fee"`
 	}
-	if err := json.NewDecoder(r.Body).Decode(&txReq); err != nil {
-		http.Error(w, "無效的請求格式", http.StatusBadRequest)
+
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{
+			"error": "invalid transaction payload",
+		})
 		return
 	}
 
-	fmt.Printf("📬 [API] 收到轉帳請求：發送 %v 元到 %s (手續費: %v)\n", txReq.Amount, txReq.To, txReq.Fee)
+	req.To = strings.TrimSpace(req.To)
+	if req.To == "" || req.Amount <= 0 {
+		writeJSON(w, http.StatusBadRequest, map[string]string{
+			"error": "recipient and positive amount are required",
+		})
+		return
+	}
 
-	// 3. 🚀 呼叫底層的 Wallet RPC (:8082/wallet)
-	// 完美對接你 server.go 裡面的 sendtoaddress 需要的三個參數！
-	// 🚀 修正點：使用 %.8f 確保小數點精確輸出，且不會變成 1.5e-05
-	rpcBody := fmt.Sprintf(`{"method": "sendtoaddress", "params": ["%s", %.8f, %.8f], "id": 1}`, txReq.To, txReq.Amount, txReq.Fee)
-
-	// 👇 這裡確定用 /wallet 沒錯！
-	resp, err := http.Post("http://localhost:8082/wallet", "application/json", strings.NewReader(rpcBody))
+	result, rpcErr, err := rpcCall(localWalletRPCURL, "sendtoaddress", []interface{}{req.To, req.Amount, req.Fee})
 	if err != nil {
-		json.NewEncoder(w).Encode(map[string]interface{}{
-			"error": "無法連線到錢包 RPC (:8082 沒開或連線失敗)",
+		writeJSON(w, http.StatusBadGateway, map[string]string{
+			"error": "wallet RPC is unavailable",
 		})
 		return
 	}
-	defer resp.Body.Close()
-
-	// 4. 解析錢包 RPC 回傳的結果
-	var rpcResp struct {
-		Result string      `json:"result"`
-		Error  interface{} `json:"error"`
-	}
-	json.NewDecoder(resp.Body).Decode(&rpcResp)
-
-	if rpcResp.Error != nil {
-		json.NewEncoder(w).Encode(map[string]interface{}{
-			"error": fmt.Sprintf("錢包拒絕轉帳: %v", rpcResp.Error),
+	if rpcErr != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{
+			"error": fmt.Sprintf("wallet rejected transaction: %v", rpcErr),
 		})
 		return
 	}
 
-	// 5. 成功！把 TxID 傳回給 Vue 前端顯示！
-	fmt.Printf("✅ [API] 轉帳成功！交易已進入 Mempool，TxID: %s\n", rpcResp.Result)
-	json.NewEncoder(w).Encode(map[string]interface{}{
-		"txid": rpcResp.Result,
-	})
+	var txID string
+	if err := json.Unmarshal(result, &txID); err != nil || txID == "" {
+		writeJSON(w, http.StatusBadGateway, map[string]string{
+			"error": "wallet RPC returned an invalid txid",
+		})
+		return
+	}
+
+	writeJSON(w, http.StatusOK, map[string]string{"txid": txID})
 }
 
-// 📊 負責向底層詢問「當前建議手續費」的函數
 func getEstimateFee(w http.ResponseWriter, r *http.Request) {
-	w.Header().Set("Access-Control-Allow-Origin", "*")
-	w.Header().Set("Content-Type", "application/json")
-	if r.Method == "OPTIONS" {
+	if !allowAPIRequest(w, r, http.MethodGet) {
 		return
 	}
 
-	// 🚀 去敲門問 Wallet RPC
-	rpcBody := `{"method": "estimatefee", "params": [], "id": 1}`
-	resp, err := http.Post("http://localhost:8082/wallet", "application/json", strings.NewReader(rpcBody))
-
-	if err != nil {
-		// 🚀 修正點：如果錢包沒開，預設回傳 0.01 (1 YiCent)
-		json.NewEncoder(w).Encode(map[string]interface{}{"fee": 0.01})
+	result, rpcErr, err := rpcCall(localWalletRPCURL, "estimatefee", []interface{}{})
+	if err != nil || rpcErr != nil {
+		writeJSON(w, http.StatusOK, map[string]float64{"fee": 0.01})
 		return
 	}
-	defer resp.Body.Close()
 
-	var rpcResp struct {
-		Result float64 `json:"result"`
+	var fee float64
+	if err := json.Unmarshal(result, &fee); err != nil {
+		fee = 0.01
 	}
-	json.NewDecoder(resp.Body).Decode(&rpcResp)
 
-	// 把最精準的報價傳給 Vue
-	json.NewEncoder(w).Encode(map[string]interface{}{
-		"fee": rpcResp.Result,
-	})
+	writeJSON(w, http.StatusOK, map[string]float64{"fee": fee})
 }
 
-// ⏳ 負責向底層 Node RPC (8081) 獲取 Mempool 的函數
 func getMempool(w http.ResponseWriter, r *http.Request) {
-	// 1. 迎賓招牌 (處理 CORS，讓 Vue 不會被擋)
-	w.Header().Set("Access-Control-Allow-Origin", "*")
-	w.Header().Set("Content-Type", "application/json")
-	if r.Method == "OPTIONS" {
+	if !allowAPIRequest(w, r, http.MethodGet) {
 		return
 	}
 
-	// 2. 🚀 代替 Vue 去敲底層 Node RPC (8081) 的門
-	rpcBody := `{"method": "getmempool", "params": [], "id": 1}`
-	resp, err := http.Post("http://localhost:8081/rpc", "application/json", strings.NewReader(rpcBody))
-
-	if err != nil {
-		fmt.Println("⚠️ [API] 無法連線到 Node RPC (8081 沒開或連線失敗)")
-		// 如果節點沒開，回傳一個空陣列，保護前端不崩潰
-		json.NewEncoder(w).Encode([]interface{}{})
+	result, rpcErr, err := rpcCall(localNodeRPCURL, "getmempool", []interface{}{})
+	if err != nil || rpcErr != nil {
+		writeJSON(w, http.StatusOK, []interface{}{})
 		return
 	}
-	defer resp.Body.Close()
 
-	// 3. 解析 Node RPC 回傳的 JSON (把外層的 result 盒子拆開)
-	var rpcResp struct {
-		Result []interface{} `json:"result"`
-	}
-	json.NewDecoder(resp.Body).Decode(&rpcResp)
-
-	// 4. 防呆機制：如果 Mempool 是空的，確保傳給 Vue 的是 [] 而不是 null
-	if rpcResp.Result == nil {
-		rpcResp.Result = []interface{}{}
+	if len(result) == 0 || bytes.Equal(bytes.TrimSpace(result), []byte("null")) {
+		writeJSON(w, http.StatusOK, []interface{}{})
+		return
 	}
 
-	// 5. 把乾淨的陣列直接傳給 Vue！
-	json.NewEncoder(w).Encode(rpcResp.Result)
+	var payload interface{}
+	if err := json.Unmarshal(result, &payload); err != nil {
+		writeJSON(w, http.StatusOK, []interface{}{})
+		return
+	}
+
+	writeJSON(w, http.StatusOK, payload)
 }
 
-// 🔍 專門用來查詢「單筆交易詳情」的函數
-// 🔍 專門用來查詢「單筆交易詳情」的函數 (🌟 升級版：直接對接 Wallet RPC 拿完美收據)
 func getTransactionDetails(w http.ResponseWriter, r *http.Request) {
-	w.Header().Set("Access-Control-Allow-Origin", "*")
-	w.Header().Set("Content-Type", "application/json")
-	if r.Method == "OPTIONS" {
+	if !allowAPIRequest(w, r, http.MethodGet) {
 		return
 	}
 
-	txID := strings.TrimPrefix(r.URL.Path, "/api/tx/")
+	txID := strings.TrimSpace(strings.TrimPrefix(r.URL.Path, "/api/tx/"))
 	if len(txID) != 64 {
-		http.Error(w, `{"error": "無效的交易 ID"}`, http.StatusBadRequest)
+		writeJSON(w, http.StatusBadRequest, map[string]string{
+			"error": "invalid transaction id",
+		})
 		return
 	}
 
-	// 🕵️ 探長新路線：直接去敲 8082 Wallet RPC 的門！
-	// 請求呼叫我們剛剛寫好的 getwallettransaction (或者你命名為 gettransaction 的那個)
-	rpcBody := fmt.Sprintf(`{"method": "getwallettransaction", "params": ["%s"], "id": 1}`, txID)
-
-	resp, err := http.Post("http://localhost:8082/wallet", "application/json", strings.NewReader(rpcBody))
+	result, rpcErr, err := rpcCall(localWalletRPCURL, "getwallettransaction", []interface{}{txID})
 	if err != nil {
-		fmt.Println("❌ [API] 無法連線到 Wallet RPC (8082):", err)
-		http.Error(w, `{"error": "無法連線到錢包伺服器"}`, http.StatusInternalServerError)
+		writeJSON(w, http.StatusBadGateway, map[string]string{
+			"error": "wallet RPC is unavailable",
+		})
 		return
+	}
+	if rpcErr != nil {
+		writeJSON(w, http.StatusNotFound, map[string]string{
+			"error": fmt.Sprintf("%v", rpcErr),
+		})
+		return
+	}
+
+	var payload interface{}
+	if err := json.Unmarshal(result, &payload); err != nil {
+		writeJSON(w, http.StatusBadGateway, map[string]string{
+			"error": "invalid wallet transaction payload",
+		})
+		return
+	}
+
+	writeJSON(w, http.StatusOK, payload)
+}
+
+func getBlockDetails(w http.ResponseWriter, r *http.Request) {
+	if !allowAPIRequest(w, r, http.MethodGet) {
+		return
+	}
+
+	query := strings.TrimSpace(strings.TrimPrefix(r.URL.Path, "/api/block/"))
+	if query == "" {
+		writeJSON(w, http.StatusBadRequest, map[string]string{
+			"error": "block height or hash is required",
+		})
+		return
+	}
+
+	blockHash := query
+	if isNumericQuery(query) {
+		result, rpcErr, err := rpcCall(localNodeRPCURL, "getblockhash", []interface{}{mustParseHeight(query)})
+		if err != nil {
+			writeJSON(w, http.StatusBadGateway, map[string]string{
+				"error": "node RPC is unavailable",
+			})
+			return
+		}
+		if rpcErr != nil {
+			writeJSON(w, http.StatusNotFound, map[string]string{
+				"error": fmt.Sprintf("%v", rpcErr),
+			})
+			return
+		}
+		if err := json.Unmarshal(result, &blockHash); err != nil || blockHash == "" {
+			writeJSON(w, http.StatusBadGateway, map[string]string{
+				"error": "node RPC returned an invalid block hash",
+			})
+			return
+		}
+	}
+
+	if len(blockHash) != 64 {
+		writeJSON(w, http.StatusBadRequest, map[string]string{
+			"error": "invalid block height or hash",
+		})
+		return
+	}
+
+	result, rpcErr, err := rpcCall(localNodeRPCURL, "getblock", []interface{}{blockHash})
+	if err != nil {
+		writeJSON(w, http.StatusBadGateway, map[string]string{
+			"error": "node RPC is unavailable",
+		})
+		return
+	}
+	if rpcErr != nil {
+		writeJSON(w, http.StatusNotFound, map[string]string{
+			"error": fmt.Sprintf("%v", rpcErr),
+		})
+		return
+	}
+
+	var payload interface{}
+	if err := json.Unmarshal(result, &payload); err != nil {
+		writeJSON(w, http.StatusBadGateway, map[string]string{
+			"error": "invalid block payload",
+		})
+		return
+	}
+
+	writeJSON(w, http.StatusOK, payload)
+}
+
+func getNodes(w http.ResponseWriter, r *http.Request) {
+	if !allowAPIRequest(w, r, http.MethodGet) {
+		return
+	}
+
+	statuses := make([]RemoteNodeStatus, 0, len(explorerNodes))
+	for _, node := range explorerNodes {
+		status := RemoteNodeStatus{
+			Name:     node.Name,
+			Host:     node.Host,
+			Online:   false,
+			LastSeen: "Never",
+		}
+
+		if probeNode(node) {
+			status.Online = true
+			status.LastSeen = time.Now().Format(time.RFC3339)
+		}
+
+		statuses = append(statuses, status)
+	}
+
+	sort.Slice(statuses, func(i, j int) bool {
+		return strings.ToLower(statuses[i].Name) < strings.ToLower(statuses[j].Name)
+	})
+
+	writeJSON(w, http.StatusOK, statuses)
+}
+
+func loadExplorerNodes() []RemoteNode {
+	raw := strings.TrimSpace(os.Getenv("MYCOIN_EXPLORER_NODES"))
+	if raw == "" {
+		return []RemoteNode{
+			{
+				Name: "Local Node",
+				Host: "127.0.0.1:" + defaultRPCPort,
+				RPC:  "http://127.0.0.1:" + defaultRPCPort + "/rpc",
+			},
+		}
+	}
+
+	parts := strings.FieldsFunc(raw, func(r rune) bool {
+		return r == ';' || r == '\n'
+	})
+
+	nodes := make([]RemoteNode, 0, len(parts))
+	for _, part := range parts {
+		entry := strings.TrimSpace(part)
+		if entry == "" {
+			continue
+		}
+
+		name := ""
+		host := entry
+		if before, after, ok := strings.Cut(entry, "@"); ok {
+			name = strings.TrimSpace(before)
+			host = strings.TrimSpace(after)
+		}
+
+		if host == "" {
+			continue
+		}
+		if !strings.Contains(host, ":") {
+			host += ":" + defaultRPCPort
+		}
+		if name == "" {
+			name = host
+		}
+
+		nodes = append(nodes, RemoteNode{
+			Name: name,
+			Host: host,
+			RPC:  "http://" + host + "/rpc",
+		})
+	}
+
+	if len(nodes) == 0 {
+		return []RemoteNode{
+			{
+				Name: "Local Node",
+				Host: "127.0.0.1:" + defaultRPCPort,
+				RPC:  "http://127.0.0.1:" + defaultRPCPort + "/rpc",
+			},
+		}
+	}
+
+	return nodes
+}
+
+func probeNode(node RemoteNode) bool {
+	result, rpcErr, err := rpcCall(node.RPC, "ping", []interface{}{})
+	if err != nil || rpcErr != nil {
+		return false
+	}
+
+	var pong string
+	return json.Unmarshal(result, &pong) == nil && pong == "pong"
+}
+
+func rpcCall(url, method string, params []interface{}) (json.RawMessage, interface{}, error) {
+	payload := map[string]interface{}{
+		"method": method,
+		"params": params,
+		"id":     1,
+	}
+
+	body, err := json.Marshal(payload)
+	if err != nil {
+		return nil, nil, err
+	}
+
+	resp, err := apiHTTPClient.Post(url, "application/json", bytes.NewReader(body))
+	if err != nil {
+		return nil, nil, err
 	}
 	defer resp.Body.Close()
 
-	// 解析 Wallet RPC 回傳的 JSON
-	var rpcResp struct {
-		Result interface{} `json:"result"` // 這裡面就是我們那張完美的 TxSummary 收據！
-		Error  interface{} `json:"error"`
+	rawBody, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, nil, err
+	}
+	if resp.StatusCode >= http.StatusBadRequest {
+		return nil, nil, fmt.Errorf("rpc status %d", resp.StatusCode)
 	}
 
-	if err := json.NewDecoder(resp.Body).Decode(&rpcResp); err != nil {
-		http.Error(w, `{"error": "解析錢包回應失敗"}`, http.StatusInternalServerError)
-		return
+	var rpcResp jsonRPCResponse
+	if err := json.Unmarshal(rawBody, &rpcResp); err != nil {
+		return nil, nil, err
 	}
 
-	// 如果 8082 說找不到這筆交易
-	if rpcResp.Error != nil {
-		http.Error(w, fmt.Sprintf(`{"error": "%v"}`, rpcResp.Error), http.StatusNotFound)
-		return
-	}
+	return rpcResp.Result, rpcResp.Error, nil
+}
 
-	// 🌟 完美達陣：直接把那張漂亮的收據 (Result) 轉發給 Vue！
-	json.NewEncoder(w).Encode(rpcResp.Result)
+func isNumericQuery(value string) bool {
+	if value == "" {
+		return false
+	}
+	for _, r := range value {
+		if r < '0' || r > '9' {
+			return false
+		}
+	}
+	return true
+}
+
+func mustParseHeight(value string) int {
+	height := 0
+	for _, r := range value {
+		height = height*10 + int(r-'0')
+	}
+	return height
+}
+
+func allowAPIRequest(w http.ResponseWriter, r *http.Request, method string) bool {
+	setCommonHeaders(w)
+
+	if r.Method == http.MethodOptions {
+		return false
+	}
+	if r.Method != method {
+		writeJSON(w, http.StatusMethodNotAllowed, map[string]string{
+			"error": method + " only",
+		})
+		return false
+	}
+	return true
+}
+
+func setCommonHeaders(w http.ResponseWriter) {
+	w.Header().Set("Access-Control-Allow-Origin", "*")
+	w.Header().Set("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
+	w.Header().Set("Access-Control-Allow-Headers", "Content-Type")
+	w.Header().Set("Content-Type", "application/json")
+}
+
+func writeJSON(w http.ResponseWriter, status int, payload interface{}) {
+	w.WriteHeader(status)
+	_ = json.NewEncoder(w).Encode(payload)
 }

@@ -1004,10 +1004,13 @@ func (h *Handler) BroadcastLocalTx(tx blockchain.Transaction) {
 	// ✅ 直接使用交易原本的 ID！保證跟 Mempool 的 Key 一模一樣！
 	txid := tx.ID
 
+	log.Println("[P2P] broadcast local tx:", txid)
+
 	log.Println("📣 broadcast local tx:", txid)
 
 	if h.Node.SyncState != node.SyncSynced {
 		h.deferLocalTxBroadcast(txid)
+		log.Println("[P2P] local tx queued until sync completes:", txid)
 		log.Println("馃搶 [P2P] local tx queued until sync completes:", txid)
 		return
 	}
@@ -1042,6 +1045,7 @@ func (h *Handler) broadcastCurrentMempool() {
 
 	deferred := h.takeDeferredLocalTxs()
 	if len(deferred) > 0 {
+		fmt.Printf("[P2P] Sync finished, replaying %d deferred local txs...\n", len(deferred))
 		fmt.Printf("馃摙 [P2P] 鍚屾瀹屾垚寰岃寤ｆ挱寤舵尲鐨?%d 绛嗘湰鍦颁氦鏄?..\n", len(deferred))
 		for _, txid := range deferred {
 			if !h.Node.Mempool.Has(txid) {

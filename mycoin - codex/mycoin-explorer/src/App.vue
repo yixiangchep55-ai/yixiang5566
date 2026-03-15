@@ -1,17 +1,25 @@
 <script setup>
-import { ref, onMounted } from "vue";
+import { ref, onMounted, computed } from "vue";
 
 // --- 1. 狀態定義 ---
 const mainBlocks = ref([]);
 const mempoolTxs = ref([]);
 const orphanBlocks = ref([]);
+const nodes = ref([]);
+const currentPage = ref("explorer");
 const searchInput = ref("");
 const walletData = ref(null);
 const showWallet = ref(false);
 const successTxId = ref("");
+const blockData = ref(null);
 const txData = ref(null);
+const showBlockTransactions = ref(false);
 const closeTxModal = () => {
   txData.value = null;
+};
+const closeBlockModal = () => {
+  blockData.value = null;
+  showBlockTransactions.value = false;
 };
 
 const txForm = ref({
@@ -49,9 +57,241 @@ const toggleWallet = () => {
   showWallet.value = !showWallet.value;
 };
 
+const setPage = (page) => {
+  currentPage.value = page;
+};
+
+const formatLastSeen = (lastSeen) => {
+  if (!lastSeen || lastSeen === "Never") return "Never";
+  return formatTime(lastSeen);
+};
+
+const getBlockHash = (block) => block?.hash || block?.Hash || "Unknown";
+
+const getBlockPrevHash = (block) =>
+  block?.prevhash || block?.PrevHash || "Unknown";
+
+const getBlockTxs = (block) =>
+  block?.transactions || block?.Transactions || [];
+
+const getBlockMiner = (block) => {
+  const miner = block?.miner || block?.Miner;
+  if (miner) return miner;
+
+  const txs = getBlockTxs(block);
+  if (!txs.length) return "Unknown";
+
+  const outputs = txs[0].vout || txs[0].Outputs || [];
+  return outputs.length ? outputs[0].to || outputs[0].To || "Unknown" : "Unknown";
+};
+
+const getBlockTxCount = (block) => getBlockTxs(block).length;
+
+const getBlockReward = (block) => block?.reward ?? block?.Reward ?? 0;
+const getBlockTarget = (block) => block?.target || block?.Target || "";
+
+const getTxId = (tx) => tx?.txid || tx?.TxID || "Unknown";
+
+const getTxInputs = (tx) => tx?.vin || tx?.Inputs || [];
+
+const getTxOutputs = (tx) => tx?.vout || tx?.Outputs || [];
+
+const getTxOutputAmount = (tx) =>
+  getTxOutputs(tx).reduce(
+    (sum, output) => sum + Number(output?.amount ?? output?.Amount ?? 0),
+    0,
+  );
+
+const shortenHash = (value, size = 16) => {
+  if (!value) return "Unknown";
+  return value.length > size ? `${value.substring(0, size)}...` : value;
+};
+
+const getTxInputLabel = (input) => {
+  const from = input?.from || input?.From;
+  if (from) return from;
+
+  const txid = input?.txid || input?.TxID || "";
+  const index = input?.index ?? input?.Index;
+  if (!txid) return "coinbase";
+
+  return `${shortenHash(txid, 12)}:${index}`;
+};
+
+const getTxOutputTo = (output) => output?.to || output?.To || "Unknown";
+
+const getTxOutputAmountValue = (output) =>
+  Number(output?.amount ?? output?.Amount ?? 0);
+
+const TARGET_BLOCK_TIME_SECONDS = 30;
+const RETARGET_INTERVAL = 10;
+const GENESIS_TARGET_HEX =
+  "00000fffffffffffffffffffffffffffffffffffffffffffffffffffffffffff";
+
+const recentBlocks = computed(() =>
+  [...mainBlocks.value]
+    .filter((block) => block && Number(block.Height ?? block.height ?? 0) >= 0)
+    .sort(
+      (a, b) => Number(b.Height ?? b.height ?? 0) - Number(a.Height ?? a.height ?? 0),
+    ),
+);
+
+const averageBlockTimeSeconds = computed(() => {
+  if (recentBlocks.value.length < 2) return null;
+
+  const intervals = [];
+  for (let i = 0; i < recentBlocks.value.length - 1; i++) {
+    const newer = Number(recentBlocks.value[i].Timestamp ?? recentBlocks.value[i].timestamp ?? 0);
+    const older = Number(
+      recentBlocks.value[i + 1].Timestamp ?? recentBlocks.value[i + 1].timestamp ?? 0,
+    );
+    const diff = newer - older;
+    if (diff > 0) {
+      intervals.push(diff);
+    }
+  }
+
+  if (!intervals.length) return null;
+  return intervals.reduce((sum, value) => sum + value, 0) / intervals.length;
+});
+
+const parseHexBigInt = (hex) => {
+  if (!hex) return null;
+  const normalized = String(hex).trim().replace(/^0x/i, "");
+  if (!normalized) return null;
+  try {
+    return BigInt(`0x${normalized}`);
+  } catch {
+    return null;
+  }
+};
+
+const calculateWorkFromTarget = (targetHex) => {
+  const target = parseHexBigInt(targetHex);
+  if (target === null || target <= 0n) return null;
+  return (1n << 256n) / (target + 1n);
+};
+
+const estimatedHashrate = computed(() => {
+  const targetHex = getBlockTarget(recentBlocks.value[0]);
+  const averageTime = averageBlockTimeSeconds.value;
+  if (!targetHex || !averageTime || averageTime <= 0) return null;
+
+  const work = calculateWorkFromTarget(targetHex);
+  if (work === null) return null;
+
+  const hashRate = Number(work) / averageTime;
+  return Number.isFinite(hashRate) ? hashRate : null;
+});
+
+const currentDifficulty = computed(() => {
+  const currentTarget = parseHexBigInt(getBlockTarget(recentBlocks.value[0]));
+  const baseTarget = parseHexBigInt(GENESIS_TARGET_HEX);
+  if (currentTarget === null || baseTarget === null || currentTarget <= 0n) return null;
+  return Number(baseTarget) / Number(currentTarget);
+});
+
+const nextDifficultyEstimate = computed(() => {
+  const averageTime = averageBlockTimeSeconds.value;
+  if (!averageTime || averageTime <= 0) return null;
+
+  const projectedRatio = TARGET_BLOCK_TIME_SECONDS / averageTime;
+  const percentDelta = (projectedRatio - 1) * 100;
+  const direction =
+    Math.abs(percentDelta) < 0.5 ? "Stable" : percentDelta > 0 ? "Up" : "Down";
+
+  return {
+    direction,
+    percentDelta,
+  };
+});
+
+const minerDistribution = computed(() => {
+  const counts = new Map();
+  for (const block of recentBlocks.value) {
+    const miner = getBlockMiner(block);
+    const label = miner && miner !== "Unknown" ? miner : "Unknown";
+    counts.set(label, (counts.get(label) || 0) + 1);
+  }
+
+  const total = recentBlocks.value.length || 1;
+  return [...counts.entries()]
+    .map(([miner, count]) => ({
+      miner,
+      count,
+      share: (count / total) * 100,
+    }))
+    .sort((a, b) => b.count - a.count)
+    .slice(0, 6);
+});
+
+const activeMinerCount = computed(() => minerDistribution.value.length);
+
+const formatHashrate = (value) => {
+  if (!value || value <= 0) return "Unavailable";
+  const units = ["H/s", "KH/s", "MH/s", "GH/s", "TH/s", "PH/s", "EH/s"];
+  let scaled = value;
+  let unitIndex = 0;
+  while (scaled >= 1000 && unitIndex < units.length - 1) {
+    scaled /= 1000;
+    unitIndex++;
+  }
+  return `${scaled.toFixed(scaled >= 100 ? 0 : scaled >= 10 ? 1 : 2)} ${units[unitIndex]}`;
+};
+
+const formatSeconds = (value) => {
+  if (!value || value <= 0) return "Unavailable";
+  if (value < 60) return `${value.toFixed(1)} sec`;
+  return `${(value / 60).toFixed(1)} min`;
+};
+
+const formatDifficultyDelta = (estimate) => {
+  if (!estimate) return "Unavailable";
+  if (estimate.direction === "Stable") return "Stable";
+  return `${estimate.direction} ${Math.abs(estimate.percentDelta).toFixed(1)}%`;
+};
+
+const minerShareStyle = (share) => ({
+  width: `${Math.max(share, 6)}%`,
+});
+
+const writeTextToClipboard = async (text) => {
+  if (!text) return false;
+
+  if (navigator.clipboard?.writeText) {
+    try {
+      await navigator.clipboard.writeText(text);
+      return true;
+    } catch (err) {
+      console.warn("Clipboard API failed, falling back:", err);
+    }
+  }
+
+  try {
+    const textarea = document.createElement("textarea");
+    textarea.value = text;
+    textarea.setAttribute("readonly", "");
+    textarea.style.position = "fixed";
+    textarea.style.opacity = "0";
+    textarea.style.pointerEvents = "none";
+    document.body.appendChild(textarea);
+    textarea.focus();
+    textarea.select();
+    const ok = document.execCommand("copy");
+    document.body.removeChild(textarea);
+    return ok;
+  } catch (err) {
+    console.error("Clipboard fallback failed:", err);
+    return false;
+  }
+};
+
 const copyToClipboard = async (text) => {
   try {
-    await navigator.clipboard.writeText(text);
+    const copied = await writeTextToClipboard(text);
+    if (!copied) {
+      return;
+    }
     // 這裡可以用 alert，或是之後我們做個更漂亮的 Toast 提示
     alert("Copied to clipboard: " + text.substring(0, 8) + "...");
   } catch (err) {
@@ -61,12 +301,29 @@ const copyToClipboard = async (text) => {
 
 // --- 3. API 請求函數 ---
 
+const copyTransactionId = async (txid) => {
+  await copyToClipboard(txid);
+};
+
 const fetchBlocks = async () => {
   try {
     const res = await fetch("http://localhost:8080/api/blocks");
     if (res.ok) mainBlocks.value = await res.json();
   } catch (error) {
     console.error("API 連線失敗！", error);
+  }
+};
+
+const fetchNodes = async () => {
+  try {
+    const res = await fetch("http://localhost:8080/api/nodes");
+    if (res.ok) {
+      const data = await res.json();
+      nodes.value = Array.isArray(data) ? data : [];
+    }
+  } catch (error) {
+    console.error("Nodes API failed:", error);
+    nodes.value = [];
   }
 };
 
@@ -107,6 +364,24 @@ const fetchRecommendedFee = async () => {
   }
 };
 
+const openTransactionDetails = async (txid) => {
+  if (!txid || txid === "Unknown") return;
+
+  walletData.value = null;
+  txData.value = null;
+
+  try {
+    const res = await fetch(`http://localhost:8080/api/tx/${txid}`);
+    if (res.ok) {
+      txData.value = await res.json();
+    } else {
+      alert("Transaction not found.");
+    }
+  } catch (error) {
+    console.error("Transaction lookup failed", error);
+  }
+};
+
 // --- 4. 交互操作 ---
 
 // 🌟 2. 雙引擎雷達 (REST API 版)
@@ -114,11 +389,47 @@ const handleSearch = async () => {
   const query = searchInput.value.trim();
   if (!query) return;
 
+  showBlockTransactions.value = false;
+  blockData.value = null;
   walletData.value = null;
   txData.value = null;
 
   try {
-    if (query.length === 64) {
+    if (/^\d+$/.test(query)) {
+      const res = await fetch(`http://localhost:8080/api/block/${query}`);
+      if (res.ok) {
+        blockData.value = await res.json();
+      } else {
+        alert("Block not found.");
+      }
+    } else if (/^[0-9a-fA-F]{64}$/.test(query)) {
+      const txRes = await fetch(`http://localhost:8080/api/tx/${query}`);
+      if (txRes.ok) {
+        txData.value = await txRes.json();
+      } else {
+        const blockRes = await fetch(`http://localhost:8080/api/block/${query}`);
+        if (blockRes.ok) {
+          blockData.value = await blockRes.json();
+        } else {
+          alert("Transaction or block not found.");
+        }
+      }
+    } else {
+      const res = await fetch(`http://localhost:8080/api/address/${query}`);
+      if (res.ok) {
+        walletData.value = await res.json();
+      } else {
+        alert("Address not found.");
+      }
+    }
+  } catch (error) {
+    console.error("Search failed", error);
+  }
+  searchInput.value = "";
+  return;
+
+  try {
+    if (/^\d+$/.test(query)) {
       // 🕵️ 呼叫我們剛剛在 Go 裡寫好的 /api/tx/ 端點！
       const res = await fetch(`http://localhost:8080/api/tx/${query}`);
       if (res.ok) {
@@ -204,6 +515,7 @@ const handleSendTx = async () => {
 
 // --- 5. 🚀 引擎啟動：生命週期鉤子 ---
 onMounted(() => {
+  fetchNodes();
   fetchBlocks();
   fetchOrphans();
   fetchMempool();
@@ -211,6 +523,7 @@ onMounted(() => {
 
   // 每 10 秒自動刷新一次數據，讓瀏覽器動起來！
   setInterval(() => {
+    fetchNodes();
     fetchBlocks();
     fetchOrphans();
     fetchMempool();
@@ -250,6 +563,372 @@ onMounted(() => {
 
     <main class="container">
       <div class="content-wrapper">
+        <div class="page-tabs">
+          <button
+            class="page-tab-btn"
+            :class="{ 'page-tab-active': currentPage === 'explorer' }"
+            @click="setPage('explorer')"
+          >
+            Explorer
+          </button>
+          <button
+            class="page-tab-btn"
+            :class="{ 'page-tab-active': currentPage === 'nodes' }"
+            @click="setPage('nodes')"
+          >
+            Nodes
+          </button>
+        </div>
+        <div
+          v-if="currentPage === 'nodes'"
+          class="table-card"
+          style="margin-bottom: 20px; padding: 20px"
+        >
+          <div class="card-header">
+            <h2>Nodes</h2>
+          </div>
+          <div
+            v-if="nodes.length"
+            style="
+              display: grid;
+              grid-template-columns: minmax(0, 2fr) minmax(0, 1fr)
+                minmax(0, 1fr);
+              gap: 12px;
+              align-items: center;
+            "
+          >
+            <template v-for="node in nodes" :key="node.name">
+              <div
+                style="
+                  font-weight: 600;
+                  overflow: hidden;
+                  text-overflow: ellipsis;
+                  white-space: nowrap;
+                "
+                :title="node.host"
+              >
+                {{ node.name }}
+              </div>
+              <div>
+                <span
+                  :style="{
+                    color: node.online ? '#4ade80' : '#f87171',
+                    fontWeight: 700,
+                  }"
+                >
+                  {{ node.online ? "Online" : "Offline" }}
+                </span>
+              </div>
+              <div style="color: #999">
+                {{ formatLastSeen(node.last_seen) }}
+              </div>
+            </template>
+          </div>
+          <div v-else style="color: #999">No nodes configured.</div>
+        </div>
+
+        <template v-else>
+        <div
+          v-if="blockData"
+          class="transfer-card"
+          style="margin-bottom: 20px; position: relative"
+        >
+          <div
+            style="
+              display: flex;
+              align-items: center;
+              justify-content: space-between;
+              gap: 10px;
+            "
+          >
+            <h3 style="color: #f7931a; margin: 0">Block Details</h3>
+            <div style="display: flex; gap: 8px; align-items: center">
+              <button
+                @click="showBlockTransactions = !showBlockTransactions"
+                class="copy-btn"
+                :title="
+                  showBlockTransactions
+                    ? 'Hide block transactions'
+                    : 'Show block transactions'
+                "
+              >
+                {{ showBlockTransactions ? "📕" : "📖" }}
+              </button>
+              <button
+                @click="showBlockTransactions = !showBlockTransactions"
+                style="
+                  width: 34px;
+                  height: 34px;
+                  background: rgba(255, 215, 0, 0.12);
+                  border: 1px solid rgba(255, 215, 0, 0.35);
+                  color: #ffd700;
+                  border-radius: 999px;
+                  cursor: pointer;
+                  font-size: 0.75rem;
+                  font-weight: 800;
+                "
+                :title="
+                  showBlockTransactions
+                    ? 'Hide block transactions'
+                    : 'Show block transactions'
+                "
+              >
+                TX
+              </button>
+              <button
+                @click="closeBlockModal"
+                style="
+                  background: rgba(220, 38, 38, 0.12);
+                  border: 1px solid rgba(248, 113, 113, 0.45);
+                  color: #f87171;
+                  cursor: pointer;
+                  font-size: 1rem;
+                  font-weight: 700;
+                  width: 34px;
+                  height: 34px;
+                  border-radius: 999px;
+                  display: inline-flex;
+                  align-items: center;
+                  justify-content: center;
+                "
+              >
+                ✕
+              </button>
+            </div>
+          </div>
+
+          <div
+            style="
+              background: rgba(0, 0, 0, 0.2);
+              padding: 15px;
+              border-radius: 8px;
+              margin-top: 15px;
+            "
+          >
+            <p style="margin: 0 0 10px 0">
+              <strong>Height:</strong> {{ blockData.height ?? blockData.Height }}
+            </p>
+            <p style="margin: 0 0 10px 0">
+              <strong>Hash:</strong>
+              <span class="hash">{{ getBlockHash(blockData) }}</span>
+              <button
+                @click="copyToClipboard(getBlockHash(blockData))"
+                class="copy-btn"
+                style="margin-left: 8px"
+                title="Copy Block Hash"
+              >
+                📋
+              </button>
+            </p>
+            <p style="margin: 0 0 10px 0">
+              <strong>Prev Hash:</strong>
+              <span class="hash">{{ getBlockPrevHash(blockData) }}</span>
+            </p>
+            <p style="margin: 0 0 10px 0">
+              <strong>Timestamp:</strong>
+              {{
+                formatTime(
+                  blockData.timestamp || blockData.Timestamp || blockData.time,
+                )
+              }}
+            </p>
+            <p style="margin: 0 0 10px 0">
+              <strong>Nonce:</strong>
+              {{ blockData.nonce ?? blockData.Nonce ?? "Unknown" }}
+            </p>
+            <p style="margin: 0 0 10px 0">
+              <strong>Miner:</strong> {{ getBlockMiner(blockData) }}
+            </p>
+            <p style="margin: 0 0 10px 0">
+              <strong>Reward:</strong> {{ Number(getBlockReward(blockData)).toFixed(2) }} YIC
+            </p>
+            <p style="margin: 0">
+              <strong>Transactions:</strong>
+              {{ getBlockTxCount(blockData) }}
+            </p>
+
+          </div>
+        </div>
+
+        <div
+          v-if="showBlockTransactions && blockData && getBlockTxCount(blockData)"
+          style="
+            position: fixed;
+            inset: 0;
+            background: rgba(0, 0, 0, 0.6);
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            z-index: 50;
+            padding: 24px;
+          "
+        >
+          <div
+            style="
+              width: min(920px, 100%);
+              max-height: 80vh;
+              overflow-y: auto;
+              background: #171717;
+              border: 1px solid rgba(255, 215, 0, 0.2);
+              border-radius: 14px;
+              box-shadow: 0 16px 40px rgba(0, 0, 0, 0.45);
+              padding: 18px;
+            "
+          >
+            <div
+              style="
+                display: flex;
+                align-items: center;
+                justify-content: space-between;
+                gap: 12px;
+                margin-bottom: 14px;
+              "
+            >
+              <h4 style="margin: 0; color: #ffd700">
+                Transactions in Block {{ blockData.height ?? blockData.Height }}
+              </h4>
+              <button
+                @click="showBlockTransactions = false"
+                style="
+                  background: transparent;
+                  border: none;
+                  color: #d4d4d4;
+                  cursor: pointer;
+                  font-size: 1.2rem;
+                "
+                title="Close transactions"
+              >
+                ✕
+              </button>
+            </div>
+
+            <details
+              v-for="tx in getBlockTxs(blockData)"
+              :key="getTxId(tx)"
+              style="
+                background: rgba(0, 0, 0, 0.22);
+                border: 1px solid rgba(255, 255, 255, 0.06);
+                border-radius: 8px;
+                padding: 12px;
+                margin-bottom: 10px;
+              "
+            >
+              <summary
+                style="
+                  display: flex;
+                  justify-content: space-between;
+                  align-items: center;
+                  gap: 12px;
+                  cursor: pointer;
+                  list-style: none;
+                "
+              >
+                <div
+                  style="
+                    display: flex;
+                    align-items: center;
+                    gap: 8px;
+                    min-width: 0;
+                    flex-shrink: 0;
+                  "
+                >
+                  <span class="hash" :title="getTxId(tx)">
+                    {{ shortenHash(getTxId(tx), 16) }}
+                  </span>
+                  <button
+                    @click.stop="copyTransactionId(getTxId(tx))"
+                    class="copy-btn"
+                    title="Copy Transaction ID"
+                  >
+                    📋
+                  </button>
+                </div>
+                <div
+                  style="
+                    display: grid;
+                    grid-template-columns: repeat(3, minmax(0, 1fr));
+                    gap: 10px;
+                    color: #aaa;
+                    font-size: 0.9em;
+                    flex: 1;
+                    max-width: 360px;
+                  "
+                >
+                  <div>Inputs: {{ getTxInputs(tx).length }}</div>
+                  <div>Outputs: {{ getTxOutputs(tx).length }}</div>
+                  <div>Amount: {{ getTxOutputAmount(tx).toFixed(2) }} YIC</div>
+                </div>
+              </summary>
+
+              <div style="margin-top: 12px">
+                <div style="display: flex; gap: 8px; margin-bottom: 12px">
+                  <button
+                    @click="copyTransactionId(getTxId(tx))"
+                    class="copy-btn"
+                    title="Copy Transaction ID"
+                  >
+                    📋
+                  </button>
+                  <button
+                    @click="openTransactionDetails(getTxId(tx))"
+                    class="copy-btn"
+                    title="Open Transaction Details"
+                  >
+                    🔎
+                  </button>
+                </div>
+
+                <div
+                  style="
+                    display: grid;
+                    grid-template-columns: repeat(2, minmax(0, 1fr));
+                    gap: 16px;
+                  "
+                >
+                  <div>
+                    <h5 style="margin: 0 0 8px 0; color: #ffd700">Inputs</h5>
+                    <div
+                      v-for="(input, index) in getTxInputs(tx)"
+                      :key="`${getTxId(tx)}-in-${index}`"
+                      style="
+                        background: rgba(255, 255, 255, 0.03);
+                        border-radius: 6px;
+                        padding: 8px 10px;
+                        margin-bottom: 8px;
+                        color: #bbb;
+                        font-size: 0.9em;
+                      "
+                    >
+                      {{ getTxInputLabel(input) }}
+                    </div>
+                  </div>
+
+                  <div>
+                    <h5 style="margin: 0 0 8px 0; color: #ffd700">Outputs</h5>
+                    <div
+                      v-for="(output, index) in getTxOutputs(tx)"
+                      :key="`${getTxId(tx)}-out-${index}`"
+                      style="
+                        background: rgba(255, 255, 255, 0.03);
+                        border-radius: 6px;
+                        padding: 8px 10px;
+                        margin-bottom: 8px;
+                        color: #bbb;
+                        font-size: 0.9em;
+                      "
+                    >
+                      <div>{{ getTxOutputTo(output) }}</div>
+                      <div style="margin-top: 4px; color: #4ade80">
+                        {{ getTxOutputAmountValue(output).toFixed(2) }} YIC
+                      </div>
+                    </div>
+                  </div>
+                </div>
+              </div>
+            </details>
+          </div>
+        </div>
+
         <div v-if="walletData" class="wallet-card">
           <div class="wallet-header">
             <h2>💼 Wallet Details</h2>
@@ -320,7 +999,11 @@ onMounted(() => {
               >
                 {{ txData.txid ? txData.txid.substring(0, 16) : "Unknown" }}...
               </span>
-              <button @click="copyToClipboard(txData.txid)" class="copy-btn">
+              <button
+                @click="copyTransactionId(txData.txid)"
+                class="copy-btn"
+                title="Copy Transaction ID"
+              >
                 📋
               </button>
             </p>
@@ -503,15 +1186,114 @@ onMounted(() => {
               >
                 <div style="margin-bottom: 25px">
                   <h2 style="color: #f39c12; margin-top: 0; font-size: 1.4rem">
-                    📈 Network Stats
+                    Network Stats
                   </h2>
-                  <div style="color: #aaa; font-size: 1rem; line-height: 1.8">
-                    <span
-                      style="font-size: 2rem; font-weight: bold; color: #fff"
-                      >1155.67 EH/s</span
-                    ><br />
-                    Next Difficulty Estimated<br />
-                    Average Block Time
+                  <div style="display: flex; flex-direction: column; gap: 14px">
+                    <div>
+                      <div
+                        style="
+                          font-size: 2rem;
+                          font-weight: bold;
+                          color: #fff;
+                          line-height: 1.1;
+                        "
+                      >
+                        {{ formatHashrate(estimatedHashrate) }}
+                      </div>
+                      <div style="color: #8f8f8f; font-size: 0.95rem">
+                        Estimated Network Hashrate
+                      </div>
+                    </div>
+
+                    <div
+                      style="
+                        display: grid;
+                        grid-template-columns: repeat(2, minmax(0, 1fr));
+                        gap: 12px;
+                      "
+                    >
+                      <div
+                        style="
+                          background: rgba(255, 255, 255, 0.03);
+                          border: 1px solid #303030;
+                          border-radius: 12px;
+                          padding: 12px 14px;
+                        "
+                      >
+                        <div style="color: #8f8f8f; font-size: 0.85rem">
+                          Current Difficulty
+                        </div>
+                        <div
+                          style="
+                            color: #f5f5f5;
+                            font-size: 1.05rem;
+                            font-weight: 600;
+                            margin-top: 6px;
+                          "
+                        >
+                          {{
+                            currentDifficulty !== null
+                              ? `${currentDifficulty.toFixed(2)}x`
+                              : "Unavailable"
+                          }}
+                        </div>
+                      </div>
+
+                      <div
+                        style="
+                          background: rgba(255, 255, 255, 0.03);
+                          border: 1px solid #303030;
+                          border-radius: 12px;
+                          padding: 12px 14px;
+                        "
+                      >
+                        <div style="color: #8f8f8f; font-size: 0.85rem">
+                          Average Block Time
+                        </div>
+                        <div
+                          style="
+                            color: #f5f5f5;
+                            font-size: 1.05rem;
+                            font-weight: 600;
+                            margin-top: 6px;
+                          "
+                        >
+                          {{ formatSeconds(averageBlockTimeSeconds) }}
+                        </div>
+                      </div>
+                    </div>
+
+                    <div
+                      style="
+                        background: rgba(255, 255, 255, 0.03);
+                        border: 1px solid #303030;
+                        border-radius: 12px;
+                        padding: 12px 14px;
+                      "
+                    >
+                      <div style="color: #8f8f8f; font-size: 0.85rem">
+                        Next Difficulty Estimated
+                      </div>
+                      <div
+                        style="
+                          color: #7fd4ff;
+                          font-size: 1.05rem;
+                          font-weight: 600;
+                          margin-top: 6px;
+                        "
+                      >
+                        {{ formatDifficultyDelta(nextDifficultyEstimate) }}
+                      </div>
+                      <div
+                        style="
+                          color: #7a7a7a;
+                          font-size: 0.82rem;
+                          margin-top: 4px;
+                        "
+                      >
+                        Based on the most recent {{ recentBlocks.length }} blocks
+                      </div>
+                    </div>
                   </div>
                 </div>
 
@@ -524,7 +1306,7 @@ onMounted(() => {
                   "
                 />
 
-                <div style="flex: 1; text-align: center">
+                <div style="flex: 1">
                   <h2
                     style="
                       color: #3498db;
@@ -536,16 +1318,102 @@ onMounted(() => {
                     🥧 Miner Pool Distribution
                   </h2>
                   <div
+                    v-if="minerDistribution.length"
+                    style="display: flex; flex-direction: column; gap: 14px"
+                  >
+                    <div
+                      style="
+                        color: #7a7a7a;
+                        font-size: 0.88rem;
+                        text-align: left;
+                        margin-bottom: 2px;
+                      "
+                    >
+                      Based on {{ recentBlocks.length }} recent blocks from
+                      {{ activeMinerCount }} active miners.
+                    </div>
+
+                    <div
+                      v-for="miner in minerDistribution"
+                      :key="miner.miner"
+                      style="
+                        background: rgba(255, 255, 255, 0.03);
+                        border: 1px solid #303030;
+                        border-radius: 12px;
+                        padding: 12px 14px;
+                      "
+                    >
+                      <div
+                        style="
+                          display: flex;
+                          justify-content: space-between;
+                          align-items: center;
+                          gap: 10px;
+                          margin-bottom: 10px;
+                        "
+                      >
+                        <div
+                          style="
+                            color: #f5f5f5;
+                            font-weight: 600;
+                            text-align: left;
+                            word-break: break-word;
+                          "
+                        >
+                          {{ miner.miner }}
+                        </div>
+                        <div
+                          style="
+                            color: #7fd4ff;
+                            font-size: 0.9rem;
+                            white-space: nowrap;
+                          "
+                        >
+                          {{ miner.count }} blocks
+                        </div>
+                      </div>
+
+                      <div
+                        style="
+                          height: 8px;
+                          background: #1b1b1b;
+                          border-radius: 999px;
+                          overflow: hidden;
+                        "
+                      >
+                        <div
+                          :style="minerShareStyle(miner.share)"
+                          style="
+                            height: 100%;
+                            background: linear-gradient(90deg, #3498db, #6dd5fa);
+                            border-radius: 999px;
+                          "
+                        ></div>
+                      </div>
+
+                      <div
+                        style="
+                          margin-top: 8px;
+                          color: #9a9a9a;
+                          font-size: 0.85rem;
+                          text-align: left;
+                        "
+                      >
+                        {{ miner.share.toFixed(1) }}% share
+                      </div>
+                    </div>
+                  </div>
+                  <div
+                    v-else
                     style="
                       padding: 40px 0;
-                      color: #3498db;
+                      color: #7a7a7a;
                       font-size: 1rem;
                       line-height: 1.6;
+                      text-align: center;
                     "
                   >
-                    🚧 <b>圖表施工中預留位</b><br /><br />
-                    Foundry USA / AntPool<br />
-                    將在這裡完美呈現！
+                    Not enough recent blocks yet to estimate miner distribution.
                   </div>
                 </div>
               </div>
@@ -647,14 +1515,17 @@ onMounted(() => {
                         <div
                           style="display: flex; align-items: center; gap: 8px"
                         >
-                          <span style="cursor: help">
+                          <span
+                            style="cursor: pointer"
+                            @click="copyTransactionId(tx.txid)"
+                          >
                             {{
                               tx.txid ? tx.txid.substring(0, 12) : "Unknown"
                             }}...
                           </span>
 
                           <button
-                            @click="copyToClipboard(tx.txid)"
+                            @click="copyTransactionId(tx.txid)"
                             class="copy-btn"
                             title="Copy Full TxID"
                           >
@@ -765,7 +1636,7 @@ onMounted(() => {
                       </td>
                     </tr>
                     <tr v-if="orphanBlocks.length === 0">
-                      <td colspan="4" class="empty-state">
+                      <td colspan="5" class="empty-state">
                         No orphan blocks in memory.
                       </td>
                     </tr>
@@ -775,6 +1646,7 @@ onMounted(() => {
             </div>
           </div>
         </div>
+        </template>
       </div>
     </main>
   </div>
@@ -884,6 +1756,33 @@ onMounted(() => {
   flex-direction: column;
   width: 100%;
   height: auto;
+}
+.page-tabs {
+  display: flex;
+  gap: 10px;
+  margin-bottom: 20px;
+}
+.page-tab-btn {
+  background-color: #1f1f1f;
+  border: 1px solid #3a3a3a;
+  color: #d5d5d5;
+  border-radius: 999px;
+  padding: 10px 18px;
+  font-weight: 700;
+  cursor: pointer;
+  transition:
+    background-color 0.2s ease,
+    border-color 0.2s ease,
+    color 0.2s ease;
+}
+.page-tab-btn:hover {
+  border-color: #ffd700;
+  color: #ffffff;
+}
+.page-tab-active {
+  background-color: #ffd700;
+  border-color: #ffd700;
+  color: #111111;
 }
 
 /* 🌟 錢包卡片專屬樣式 */
