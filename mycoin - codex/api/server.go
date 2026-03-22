@@ -5,7 +5,9 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"io/fs"
 	"mycoin/indexer"
+	uiembed "mycoin/mycoin-explorer"
 	"net/http"
 	"os"
 	"sort"
@@ -32,6 +34,65 @@ type RemoteNodeStatus struct {
 	LastSeen string `json:"last_seen"`
 }
 
+type DormantAddressSummary struct {
+	Address     string    `json:"address"`
+	Balance     float64   `json:"balance"`
+	LastActive  time.Time `json:"last_active"`
+	DormantDays int       `json:"dormant_days"`
+	TxCount     int64     `json:"tx_count"`
+	TotalIn     float64   `json:"total_in"`
+	TotalOut    float64   `json:"total_out"`
+}
+
+type DashboardNodeStatus struct {
+	NodeID        uint64 `json:"node_id"`
+	Mode          string `json:"mode"`
+	BestHeight    uint64 `json:"best_height"`
+	BestHash      string `json:"best_hash"`
+	Synced        bool   `json:"synced"`
+	SyncState     string `json:"sync_state"`
+	IsSyncing     bool   `json:"is_syncing"`
+	PeerCount     int    `json:"peer_count"`
+	MempoolCount  int    `json:"mempool_count"`
+	OrphanCount   int    `json:"orphan_count"`
+	MiningEnabled bool   `json:"mining_enabled"`
+	MiningAddress string `json:"mining_address"`
+}
+
+type DashboardWalletStatus struct {
+	Address       string  `json:"address"`
+	Balance       float64 `json:"balance"`
+	PendingTxs    int     `json:"pending_txs"`
+	MiningAddress string  `json:"mining_address"`
+}
+
+type DashboardWalletActivity struct {
+	Status        string  `json:"status"`
+	Type          string  `json:"type"`
+	Amount        float64 `json:"amount"`
+	Confirmations int     `json:"confirmations"`
+	TxID          string  `json:"txid"`
+	Timestamp     int64   `json:"timestamp"`
+}
+
+type DashboardStatusResponse struct {
+	Node             *DashboardNodeStatus      `json:"node"`
+	Wallet           *DashboardWalletStatus    `json:"wallet"`
+	SpendableBalance float64                   `json:"spendable_balance"`
+	PendingAmount    float64                   `json:"pending_amount"`
+	Activity         []DashboardWalletActivity `json:"activity"`
+	Indexer          *DashboardIndexerStatus   `json:"indexer,omitempty"`
+	Timestamp        string                    `json:"timestamp"`
+}
+
+type DashboardIndexerStatus struct {
+	Requested    bool   `json:"requested"`
+	Running      bool   `json:"running"`
+	UsingDefault bool   `json:"using_default"`
+	Status       string `json:"status"`
+	Message      string `json:"message"`
+}
+
 type jsonRPCResponse struct {
 	Result json.RawMessage `json:"result"`
 	Error  interface{}     `json:"error"`
@@ -53,11 +114,52 @@ func StartServer(port string) {
 	mux.HandleFunc("/api/block/", getBlockDetails)
 	mux.HandleFunc("/api/tx/", getTransactionDetails)
 	mux.HandleFunc("/api/nodes", getNodes)
+	mux.HandleFunc("/api/dormant-addresses", getDormantAddresses)
+	mux.HandleFunc("/api/dashboard/status", getDashboardStatus)
+	mux.HandleFunc("/api/miner/control", setMiningControl)
+	mux.Handle("/", explorerUIHandler())
 
-	fmt.Printf("[API] Explorer API listening at http://localhost:%s\n", port)
+	fmt.Printf("[API] Explorer + Dashboard listening at http://localhost:%s\n", port)
 	if err := http.ListenAndServe(":"+port, mux); err != nil {
 		fmt.Println("[API] server failed:", err)
 	}
+}
+
+func explorerUIHandler() http.Handler {
+	distFS, err := uiembed.DistFS()
+	if err != nil {
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			http.Error(w, "embedded frontend is unavailable", http.StatusInternalServerError)
+		})
+	}
+
+	fileServer := http.FileServer(http.FS(distFS))
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.HasPrefix(r.URL.Path, "/api/") {
+			http.NotFound(w, r)
+			return
+		}
+
+		path := strings.TrimPrefix(r.URL.Path, "/")
+		if path == "" {
+			path = "index.html"
+		}
+
+		if _, err := fs.Stat(distFS, path); err == nil {
+			fileServer.ServeHTTP(w, r)
+			return
+		}
+
+		indexHTML, err := fs.ReadFile(distFS, "index.html")
+		if err != nil {
+			http.Error(w, "embedded frontend is unavailable", http.StatusInternalServerError)
+			return
+		}
+
+		w.Header().Set("Content-Type", "text/html; charset=utf-8")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write(indexHTML)
+	})
 }
 
 func getMainBlocks(w http.ResponseWriter, r *http.Request) {
@@ -458,6 +560,221 @@ func getNodes(w http.ResponseWriter, r *http.Request) {
 	})
 
 	writeJSON(w, http.StatusOK, statuses)
+}
+
+func getDormantAddresses(w http.ResponseWriter, r *http.Request) {
+	if !allowAPIRequest(w, r, http.MethodGet) {
+		return
+	}
+
+	if indexer.DB == nil {
+		writeJSON(w, http.StatusServiceUnavailable, map[string]string{
+			"error": "indexer is not enabled",
+		})
+		return
+	}
+
+	type dormantAddressRow struct {
+		Address     string    `gorm:"column:address"`
+		BalanceRaw  int64     `gorm:"column:balance_raw"`
+		LastActive  time.Time `gorm:"column:last_active"`
+		TxCount     int64     `gorm:"column:tx_count"`
+		TotalInRaw  int64     `gorm:"column:total_in_raw"`
+		TotalOutRaw int64     `gorm:"column:total_out_raw"`
+	}
+
+	var rows []dormantAddressRow
+	query := `
+		SELECT
+			address,
+			COALESCE(SUM(CASE WHEN type = 'IN' THEN amount ELSE 0 END), 0) -
+				COALESCE(SUM(CASE WHEN type = 'OUT' THEN amount ELSE 0 END), 0) AS balance_raw,
+			MAX(created_at) AS last_active,
+			COUNT(DISTINCT tx_id) AS tx_count,
+			COALESCE(SUM(CASE WHEN type = 'IN' THEN amount ELSE 0 END), 0) AS total_in_raw,
+			COALESCE(SUM(CASE WHEN type = 'OUT' THEN amount ELSE 0 END), 0) AS total_out_raw
+		FROM address_ledgers
+		GROUP BY address
+		HAVING
+			COALESCE(SUM(CASE WHEN type = 'IN' THEN amount ELSE 0 END), 0) -
+				COALESCE(SUM(CASE WHEN type = 'OUT' THEN amount ELSE 0 END), 0) > 0
+		ORDER BY MAX(created_at) ASC
+		LIMIT 25;
+	`
+
+	if err := indexer.DB.Raw(query).Scan(&rows).Error; err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{
+			"error": "failed to query dormant addresses",
+		})
+		return
+	}
+
+	now := time.Now()
+	results := make([]DormantAddressSummary, 0, len(rows))
+	for _, row := range rows {
+		dormantDays := 0
+		if !row.LastActive.IsZero() {
+			dormantDays = int(now.Sub(row.LastActive).Hours() / 24)
+		}
+
+		results = append(results, DormantAddressSummary{
+			Address:     row.Address,
+			Balance:     float64(row.BalanceRaw) / 100.0,
+			LastActive:  row.LastActive,
+			DormantDays: dormantDays,
+			TxCount:     row.TxCount,
+			TotalIn:     float64(row.TotalInRaw) / 100.0,
+			TotalOut:    float64(row.TotalOutRaw) / 100.0,
+		})
+	}
+
+	writeJSON(w, http.StatusOK, results)
+}
+
+func getDashboardStatus(w http.ResponseWriter, r *http.Request) {
+	if !allowAPIRequest(w, r, http.MethodGet) {
+		return
+	}
+
+	response := DashboardStatusResponse{
+		Timestamp: time.Now().Format(time.RFC3339),
+		Indexer:   currentIndexerStatus(),
+	}
+
+	nodeResult, nodeRPCErr, nodeErr := rpcCall(localNodeRPCURL, "getnodeinfo", []interface{}{})
+	if nodeErr != nil {
+		writeJSON(w, http.StatusBadGateway, map[string]string{
+			"error": "node RPC is unavailable",
+		})
+		return
+	}
+	if nodeRPCErr != nil {
+		writeJSON(w, http.StatusBadGateway, map[string]string{
+			"error": fmt.Sprintf("%v", nodeRPCErr),
+		})
+		return
+	}
+
+	var nodeStatus DashboardNodeStatus
+	if err := json.Unmarshal(nodeResult, &nodeStatus); err != nil {
+		writeJSON(w, http.StatusBadGateway, map[string]string{
+			"error": "invalid node status payload",
+		})
+		return
+	}
+	response.Node = &nodeStatus
+
+	walletResult, walletRPCErr, walletErr := rpcCall(localWalletRPCURL, "getwalletinfo", []interface{}{})
+	if walletErr == nil && walletRPCErr == nil {
+		var walletStatus DashboardWalletStatus
+		if err := json.Unmarshal(walletResult, &walletStatus); err == nil {
+			response.Wallet = &walletStatus
+			response.SpendableBalance = walletStatus.Balance
+		}
+	}
+
+	activityResult, activityRPCErr, activityErr := rpcCall(localWalletRPCURL, "listwalletactivity", []interface{}{8})
+	if activityErr == nil && activityRPCErr == nil {
+		var activity []DashboardWalletActivity
+		if err := json.Unmarshal(activityResult, &activity); err == nil {
+			response.Activity = activity
+			pendingOutgoing := 0.0
+			pendingTotal := 0.0
+			for _, item := range activity {
+				if !strings.EqualFold(item.Status, "Pending") {
+					continue
+				}
+				if item.Amount < 0 {
+					pendingOutgoing += -item.Amount
+					pendingTotal += -item.Amount
+				} else {
+					pendingTotal += item.Amount
+				}
+			}
+			response.PendingAmount = pendingTotal
+			if response.Wallet != nil {
+				response.SpendableBalance = response.Wallet.Balance - pendingOutgoing
+				if response.SpendableBalance < 0 {
+					response.SpendableBalance = 0
+				}
+			}
+		}
+	}
+
+	writeJSON(w, http.StatusOK, response)
+}
+
+func currentIndexerStatus() *DashboardIndexerStatus {
+	requested := strings.EqualFold(strings.TrimSpace(os.Getenv("INDEXER_ENABLED")), "true")
+	usingDefault := strings.TrimSpace(os.Getenv("DATABASE_URL")) == ""
+	running := requested && indexer.Enabled && indexer.DB != nil
+
+	status := "Disabled"
+	message := "Indexer was not enabled for this node session."
+
+	if running {
+		status = "Running"
+		if usingDefault {
+			message = "Indexer is running with the backend default PostgreSQL settings."
+		} else {
+			message = "Indexer is running with the configured PostgreSQL connection."
+		}
+	} else if requested {
+		status = "DB error"
+		if usingDefault {
+			message = "Indexer was requested, but PostgreSQL did not connect using the backend default settings."
+		} else {
+			message = "Indexer was requested, but PostgreSQL did not connect using the configured database URL."
+		}
+	}
+
+	return &DashboardIndexerStatus{
+		Requested:    requested,
+		Running:      running,
+		UsingDefault: usingDefault,
+		Status:       status,
+		Message:      message,
+	}
+}
+
+func setMiningControl(w http.ResponseWriter, r *http.Request) {
+	if !allowAPIRequest(w, r, http.MethodPost) {
+		return
+	}
+
+	var req struct {
+		Enabled bool `json:"enabled"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{
+			"error": "invalid miner control payload",
+		})
+		return
+	}
+
+	result, rpcErr, err := rpcCall(localNodeRPCURL, "setminingenabled", []interface{}{req.Enabled})
+	if err != nil {
+		writeJSON(w, http.StatusBadGateway, map[string]string{
+			"error": "node RPC is unavailable",
+		})
+		return
+	}
+	if rpcErr != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{
+			"error": fmt.Sprintf("%v", rpcErr),
+		})
+		return
+	}
+
+	var payload map[string]interface{}
+	if err := json.Unmarshal(result, &payload); err != nil {
+		writeJSON(w, http.StatusBadGateway, map[string]string{
+			"error": "invalid miner control payload",
+		})
+		return
+	}
+
+	writeJSON(w, http.StatusOK, payload)
 }
 
 func loadExplorerNodes() []RemoteNode {

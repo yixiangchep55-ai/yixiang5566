@@ -15,6 +15,23 @@ import (
 	nodepkg "mycoin/node"
 )
 
+func syncStateLabel(state nodepkg.SyncState) string {
+	switch state {
+	case nodepkg.SyncIdle:
+		return "idle"
+	case nodepkg.SyncIBD:
+		return "ibd"
+	case nodepkg.SyncHeaders:
+		return "headers"
+	case nodepkg.SyncBodies:
+		return "bodies"
+	case nodepkg.SyncSynced:
+		return "synced"
+	default:
+		return "unknown"
+	}
+}
+
 // RPC
 func (s *RPCServer) Start(addr string) {
 	http.HandleFunc("/rpc", s.handleRPC)
@@ -58,6 +75,66 @@ func (s *RPCServer) handleRPC(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		s.writeResult(w, req.ID, s.Node.Best.Hash)
+
+	case "getnodeinfo":
+		if s.Node == nil {
+			s.writeError(w, req.ID, "node not ready")
+			return
+		}
+
+		peerCount := 0
+		if s.Handler != nil && s.Handler.Network != nil {
+			peerCount = s.Handler.Network.PeerCount()
+		}
+
+		bestHeight := uint64(0)
+		bestHash := ""
+		if s.Node.Best != nil {
+			bestHeight = s.Node.Best.Height
+			bestHash = s.Node.Best.Hash
+		}
+
+		mempoolCount := 0
+		if s.Node.Mempool != nil {
+			mempoolCount = len(s.Node.Mempool.GetAll())
+		}
+
+		s.writeResult(w, req.ID, map[string]interface{}{
+			"node_id":        s.Node.NodeID,
+			"mode":           s.Node.Mode,
+			"best_height":    bestHeight,
+			"best_hash":      bestHash,
+			"synced":         s.Node.IsSynced(),
+			"sync_state":     syncStateLabel(s.Node.SyncState),
+			"is_syncing":     s.Node.IsSyncing,
+			"peer_count":     peerCount,
+			"mempool_count":  mempoolCount,
+			"orphan_count":   len(s.Node.GetOrphanBlocks()),
+			"mining_enabled": s.Node.IsMiningEnabled(),
+			"mining_address": s.Node.MiningAddress,
+		})
+
+	case "setminingenabled":
+		if s.Node == nil {
+			s.writeError(w, req.ID, "node not ready")
+			return
+		}
+		if len(req.Params) != 1 {
+			s.writeError(w, req.ID, "enabled flag required")
+			return
+		}
+
+		enabled, ok := req.Params[0].(bool)
+		if !ok {
+			s.writeError(w, req.ID, "enabled flag must be boolean")
+			return
+		}
+
+		s.Node.SetMiningEnabled(enabled)
+		s.writeResult(w, req.ID, map[string]interface{}{
+			"mining_enabled": s.Node.IsMiningEnabled(),
+			"message":        fmt.Sprintf("mining %s", map[bool]string{true: "enabled", false: "disabled"}[enabled]),
+		})
 
 	case "getblockhash":
 		if len(req.Params) != 1 {

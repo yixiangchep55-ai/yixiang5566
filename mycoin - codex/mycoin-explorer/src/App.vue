@@ -5,7 +5,8 @@ import { ref, onMounted, computed } from "vue";
 const mainBlocks = ref([]);
 const mempoolTxs = ref([]);
 const orphanBlocks = ref([]);
-const nodes = ref([]);
+const dormantAddresses = ref([]);
+const dormantMessage = ref("");
 const currentPage = ref("explorer");
 const searchInput = ref("");
 const walletData = ref(null);
@@ -64,6 +65,62 @@ const setPage = (page) => {
 const formatLastSeen = (lastSeen) => {
   if (!lastSeen || lastSeen === "Never") return "Never";
   return formatTime(lastSeen);
+};
+
+const formatDormantFor = (days) => {
+  const numericDays = Number(days || 0);
+  if (numericDays <= 0) return "Today";
+  if (numericDays < 30) return `${numericDays} days`;
+  if (numericDays < 365) return `${(numericDays / 30).toFixed(1)} months`;
+  return `${(numericDays / 365).toFixed(1)} years`;
+};
+
+const dormantDistribution = computed(() => {
+  const buckets = [
+    { label: "0-30d", min: 0, max: 30, count: 0, totalBalance: 0 },
+    { label: "31-90d", min: 31, max: 90, count: 0, totalBalance: 0 },
+    { label: "91-180d", min: 91, max: 180, count: 0, totalBalance: 0 },
+    { label: "181-365d", min: 181, max: 365, count: 0, totalBalance: 0 },
+    { label: "1y+", min: 366, max: Number.POSITIVE_INFINITY, count: 0, totalBalance: 0 },
+  ];
+
+  for (const entry of dormantAddresses.value) {
+    const days = Number(entry?.dormant_days || 0);
+    const balance = Number(entry?.balance || 0);
+    const bucket = buckets.find((item) => days >= item.min && days <= item.max);
+    if (!bucket) continue;
+    bucket.count += 1;
+    bucket.totalBalance += balance;
+  }
+
+  return buckets;
+});
+
+const dormantMaxBucketCount = computed(() =>
+  Math.max(...dormantDistribution.value.map((bucket) => bucket.count), 1),
+);
+
+const dormantBarStyle = (count) => ({
+  width: `${Math.max((count / dormantMaxBucketCount.value) * 100, count > 0 ? 10 : 0)}%`,
+});
+
+const topDormantWhales = computed(() =>
+  [...dormantAddresses.value]
+    .sort((a, b) => Number(b?.balance || 0) - Number(a?.balance || 0))
+    .slice(0, 5),
+);
+
+const isDormantWhale = (balance) => Number(balance || 0) >= 100;
+
+const dormantBalanceStyle = (balance) => {
+  const numericBalance = Number(balance || 0);
+  if (numericBalance >= 250) {
+    return { color: "#ffd166", fontWeight: 700 };
+  }
+  if (numericBalance >= 100) {
+    return { color: "#ffb703", fontWeight: 700 };
+  }
+  return { color: "#f5f5f5", fontWeight: 600 };
 };
 
 const getBlockHash = (block) => block?.hash || block?.Hash || "Unknown";
@@ -314,16 +371,25 @@ const fetchBlocks = async () => {
   }
 };
 
-const fetchNodes = async () => {
+const fetchDormantAddresses = async () => {
   try {
-    const res = await fetch("http://localhost:8080/api/nodes");
+    const res = await fetch("http://localhost:8080/api/dormant-addresses");
     if (res.ok) {
       const data = await res.json();
-      nodes.value = Array.isArray(data) ? data : [];
+      dormantAddresses.value = Array.isArray(data) ? data : [];
+      dormantMessage.value = dormantAddresses.value.length
+        ? ""
+        : "No dormant addresses with remaining balance found yet.";
+      return;
     }
+
+    const data = await res.json().catch(() => ({}));
+    dormantAddresses.value = [];
+    dormantMessage.value = data.error || "Dormant addresses are unavailable.";
   } catch (error) {
-    console.error("Nodes API failed:", error);
-    nodes.value = [];
+    console.error("Dormant addresses API failed:", error);
+    dormantAddresses.value = [];
+    dormantMessage.value = "Dormant addresses are unavailable.";
   }
 };
 
@@ -515,7 +581,7 @@ const handleSendTx = async () => {
 
 // --- 5. 🚀 引擎啟動：生命週期鉤子 ---
 onMounted(() => {
-  fetchNodes();
+  fetchDormantAddresses();
   fetchBlocks();
   fetchOrphans();
   fetchMempool();
@@ -523,7 +589,7 @@ onMounted(() => {
 
   // 每 10 秒自動刷新一次數據，讓瀏覽器動起來！
   setInterval(() => {
-    fetchNodes();
+    fetchDormantAddresses();
     fetchBlocks();
     fetchOrphans();
     fetchMempool();
@@ -573,58 +639,280 @@ onMounted(() => {
           </button>
           <button
             class="page-tab-btn"
-            :class="{ 'page-tab-active': currentPage === 'nodes' }"
-            @click="setPage('nodes')"
+            :class="{ 'page-tab-active': currentPage === 'dormant' }"
+            @click="setPage('dormant')"
           >
-            Nodes
+            Dormant
           </button>
         </div>
         <div
-          v-if="currentPage === 'nodes'"
+          v-if="currentPage === 'dormant'"
           class="table-card"
           style="margin-bottom: 20px; padding: 20px"
         >
           <div class="card-header">
-            <h2>Nodes</h2>
+            <h2>Dormant Addresses</h2>
           </div>
           <div
-            v-if="nodes.length"
             style="
-              display: grid;
-              grid-template-columns: minmax(0, 2fr) minmax(0, 1fr)
-                minmax(0, 1fr);
-              gap: 12px;
-              align-items: center;
+              color: #8f8f8f;
+              font-size: 0.92rem;
+              margin-bottom: 16px;
             "
           >
-            <template v-for="node in nodes" :key="node.name">
-              <div
-                style="
-                  font-weight: 600;
-                  overflow: hidden;
-                  text-overflow: ellipsis;
-                  white-space: nowrap;
-                "
-                :title="node.host"
-              >
-                {{ node.name }}
-              </div>
-              <div>
-                <span
-                  :style="{
-                    color: node.online ? '#4ade80' : '#f87171',
-                    fontWeight: 700,
-                  }"
-                >
-                  {{ node.online ? "Online" : "Offline" }}
-                </span>
-              </div>
-              <div style="color: #999">
-                {{ formatLastSeen(node.last_seen) }}
-              </div>
-            </template>
+            Addresses with remaining balance, ranked by oldest recent activity.
           </div>
-          <div v-else style="color: #999">No nodes configured.</div>
+          <div
+            v-if="dormantAddresses.length"
+            style="
+              margin-bottom: 20px;
+              padding: 18px;
+              border: 1px solid #303030;
+              border-radius: 14px;
+              background: rgba(255, 255, 255, 0.02);
+            "
+          >
+            <div
+              style="
+                display: flex;
+                justify-content: space-between;
+                align-items: center;
+                gap: 12px;
+                margin-bottom: 14px;
+                flex-wrap: wrap;
+              "
+            >
+              <div>
+                <div
+                  style="
+                    color: #f5f5f5;
+                    font-size: 1rem;
+                    font-weight: 700;
+                    margin-bottom: 4px;
+                  "
+                >
+                  Dormancy Distribution
+                </div>
+                <div style="color: #8f8f8f; font-size: 0.86rem">
+                  Address count grouped by time since last activity.
+                </div>
+              </div>
+              <div style="color: #8f8f8f; font-size: 0.86rem">
+                {{ dormantAddresses.length }} tracked dormant addresses
+              </div>
+            </div>
+
+            <div style="display: flex; flex-direction: column; gap: 12px">
+              <div
+                v-for="bucket in dormantDistribution"
+                :key="bucket.label"
+                style="
+                  display: grid;
+                  grid-template-columns: 88px minmax(0, 1fr) 90px;
+                  gap: 12px;
+                  align-items: center;
+                "
+              >
+                <div style="color: #cfcfcf; font-size: 0.9rem; font-weight: 600">
+                  {{ bucket.label }}
+                </div>
+                <div
+                  style="
+                    height: 10px;
+                    background: #1b1b1b;
+                    border-radius: 999px;
+                    overflow: hidden;
+                  "
+                >
+                  <div
+                    :style="dormantBarStyle(bucket.count)"
+                    style="
+                      height: 100%;
+                      background: linear-gradient(90deg, #2ecc71, #8be9a8);
+                      border-radius: 999px;
+                    "
+                  ></div>
+                </div>
+                <div
+                  style="
+                    color: #7fe7a0;
+                    font-size: 0.9rem;
+                    font-weight: 600;
+                    text-align: right;
+                  "
+                >
+                  {{ bucket.count }}
+                </div>
+              </div>
+            </div>
+          </div>
+          <div
+            v-if="topDormantWhales.length"
+            style="
+              margin-bottom: 20px;
+              padding: 18px;
+              border: 1px solid #303030;
+              border-radius: 14px;
+              background: rgba(255, 255, 255, 0.02);
+            "
+          >
+            <div
+              style="
+                display: flex;
+                justify-content: space-between;
+                align-items: center;
+                gap: 12px;
+                margin-bottom: 14px;
+                flex-wrap: wrap;
+              "
+            >
+              <div>
+                <div
+                  style="
+                    color: #f5f5f5;
+                    font-size: 1rem;
+                    font-weight: 700;
+                    margin-bottom: 4px;
+                  "
+                >
+                  Top Dormant Whales
+                </div>
+                <div style="color: #8f8f8f; font-size: 0.86rem">
+                  Largest dormant balances with no recent movement.
+                </div>
+              </div>
+              <div style="color: #ffb703; font-size: 0.86rem; font-weight: 700">
+                Top {{ topDormantWhales.length }}
+              </div>
+            </div>
+
+            <div style="display: flex; flex-direction: column; gap: 12px">
+              <div
+                v-for="entry in topDormantWhales"
+                :key="`whale-${entry.address}`"
+                style="
+                  display: grid;
+                  grid-template-columns: minmax(0, 2fr) minmax(0, 1fr) minmax(0, 1fr);
+                  gap: 12px;
+                  align-items: center;
+                  padding: 12px 14px;
+                  border-radius: 12px;
+                  background: rgba(255, 255, 255, 0.03);
+                  border: 1px solid #303030;
+                "
+              >
+                <div style="display: flex; align-items: center; gap: 8px; min-width: 0">
+                  <span
+                    style="
+                      background: rgba(255, 183, 3, 0.14);
+                      color: #ffb703;
+                      border: 1px solid rgba(255, 183, 3, 0.4);
+                      border-radius: 999px;
+                      padding: 2px 8px;
+                      font-size: 0.72rem;
+                      font-weight: 700;
+                      flex-shrink: 0;
+                    "
+                  >
+                    Whale
+                  </span>
+                  <span
+                    :title="entry.address"
+                    style="
+                      color: #f5f5f5;
+                      font-weight: 600;
+                      overflow: hidden;
+                      text-overflow: ellipsis;
+                      white-space: nowrap;
+                    "
+                  >
+                    {{ shortenHash(entry.address, 20) }}
+                  </span>
+                </div>
+
+                <div
+                  style="
+                    color: #ffd166;
+                    font-weight: 700;
+                    text-align: right;
+                  "
+                >
+                  {{ Number(entry.balance || 0).toFixed(2) }} YIC
+                </div>
+
+                <div
+                  style="
+                    color: #f39c12;
+                    font-weight: 600;
+                    text-align: right;
+                  "
+                >
+                  {{ formatDormantFor(entry.dormant_days) }}
+                </div>
+              </div>
+            </div>
+          </div>
+          <div v-if="dormantAddresses.length" class="table-responsive">
+            <table class="btc-table">
+              <thead>
+                <tr>
+                  <th>Address</th>
+                  <th class="right-align">Balance</th>
+                  <th>Last Active</th>
+                  <th>Dormant For</th>
+                  <th class="right-align desktop-only">TXs</th>
+                </tr>
+              </thead>
+              <tbody>
+                <tr v-for="entry in dormantAddresses" :key="entry.address">
+                  <td class="hash" :title="entry.address">
+                    <div style="display: flex; align-items: center; gap: 8px">
+                      <span style="cursor: help">
+                        {{ shortenHash(entry.address, 18) }}
+                      </span>
+                      <span
+                        v-if="isDormantWhale(entry.balance)"
+                        style="
+                          background: rgba(255, 183, 3, 0.14);
+                          color: #ffb703;
+                          border: 1px solid rgba(255, 183, 3, 0.4);
+                          border-radius: 999px;
+                          padding: 2px 8px;
+                          font-size: 0.72rem;
+                          font-weight: 700;
+                        "
+                      >
+                        Whale
+                      </span>
+                      <button
+                        @click="copyToClipboard(entry.address)"
+                        class="copy-btn"
+                        title="Copy Address"
+                      >
+                        📋
+                      </button>
+                    </div>
+                  </td>
+                  <td
+                    class="right-align"
+                    :style="dormantBalanceStyle(entry.balance)"
+                  >
+                    {{ Number(entry.balance || 0).toFixed(2) }} YIC
+                  </td>
+                  <td style="color: #b0b0b0">
+                    {{ formatTime(entry.last_active) }}
+                  </td>
+                  <td style="color: #f39c12; font-weight: 600">
+                    {{ formatDormantFor(entry.dormant_days) }}
+                  </td>
+                  <td class="right-align desktop-only">
+                    {{ entry.tx_count }}
+                  </td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+          <div v-else style="color: #999">{{ dormantMessage }}</div>
         </div>
 
         <template v-else>

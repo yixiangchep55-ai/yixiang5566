@@ -168,11 +168,10 @@ func main() {
 	fmt.Println("⛏ Miner started (Node-controlled) with address:", nd.MiningAddress)
 
 	// ==========================================
-	// 🌟 6.5 啟動區塊瀏覽器 API 伺服器 (背景執行)
+	// 🌟 6.5 啟動 Explorer / Dashboard API 伺服器
+	// Dashboard 狀態頁不依賴 Indexer，所以 API 固定啟動。
 	// ==========================================
-	if indexer.Enabled {
-		go api.StartServer("8080")
-	}
+	go api.StartServer("8080")
 
 	// -------------------------------
 	// 7. 阻塞主线程

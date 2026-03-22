@@ -9,6 +9,8 @@ import (
 	"mycoin/node"
 	"mycoin/wallet"
 	"net/http"
+	"sort"
+	"time"
 )
 
 type TxSummary struct {
@@ -19,6 +21,15 @@ type TxSummary struct {
 	NetworkFee float64 `json:"network_fee"`
 	Change     float64 `json:"change"`
 	IsCoinbase bool    `json:"is_coinbase"`
+}
+
+type WalletActivity struct {
+	Status        string  `json:"status"`
+	Type          string  `json:"type"`
+	Amount        float64 `json:"amount"`
+	Confirmations int     `json:"confirmations"`
+	TxID          string  `json:"txid"`
+	Timestamp     int64   `json:"timestamp"`
 }
 
 // JSON-RPC
@@ -46,6 +57,25 @@ type RPCUTXO struct {
 	Index  int    `json:"index"`
 	Amount int    `json:"amount"`
 	To     string `json:"to"`
+}
+
+func (s *RPCServer) walletBalance() float64 {
+	if s == nil || s.Node == nil || s.Wallet == nil {
+		return 0
+	}
+
+	keys := s.Node.UTXO.AddrIndex[s.Wallet.Address]
+	if keys == nil {
+		return 0
+	}
+
+	total := 0
+	for _, key := range keys {
+		utxo := s.Node.UTXO.Set[key]
+		total += utxo.Amount
+	}
+
+	return float64(total) / 100.0
 }
 
 func (s *RPCServer) Start(addr string) {
@@ -85,6 +115,24 @@ func (s *RPCServer) handleRPC(w http.ResponseWriter, r *http.Request) {
 		// 回報給前台
 		s.writeResult(w, req.ID, float64(recommendedFee)/100.0)
 
+	case "getwalletinfo":
+		if s == nil || s.Wallet == nil {
+			s.writeError(w, req.ID, "wallet not ready")
+			return
+		}
+
+		pending := 0
+		if s.Node != nil && s.Node.Mempool != nil {
+			pending = len(s.Node.Mempool.GetAll())
+		}
+
+		s.writeResult(w, req.ID, map[string]interface{}{
+			"address":        s.Wallet.Address,
+			"balance":        s.walletBalance(),
+			"pending_txs":    pending,
+			"mining_address": s.Node.MiningAddress,
+		})
+
 	case "getbalance":
 		if len(req.Params) != 1 {
 			s.writeError(w, req.ID, "address required")
@@ -94,6 +142,11 @@ func (s *RPCServer) handleRPC(w http.ResponseWriter, r *http.Request) {
 		addr, ok := req.Params[0].(string)
 		if !ok {
 			s.writeError(w, req.ID, "invalid address")
+			return
+		}
+
+		if s.Wallet != nil && addr == s.Wallet.Address {
+			s.writeResult(w, req.ID, s.walletBalance())
 			return
 		}
 
@@ -161,6 +214,15 @@ func (s *RPCServer) handleRPC(w http.ResponseWriter, r *http.Request) {
 
 		// 3. 回傳漂亮的收據
 		s.writeResult(w, req.ID, summary)
+
+	case "listwalletactivity":
+		limit := 6
+		if len(req.Params) >= 1 {
+			if raw, ok := req.Params[0].(float64); ok && int(raw) > 0 {
+				limit = int(raw)
+			}
+		}
+		s.writeResult(w, req.ID, s.listWalletActivity(limit))
 
 	case "listutxos":
 		if len(req.Params) != 1 {
@@ -513,4 +575,136 @@ func (s *RPCServer) ParseToHumanSummary(tx blockchain.Transaction) TxSummary {
 	}
 
 	return summary
+}
+
+func (s *RPCServer) listWalletActivity(limit int) []WalletActivity {
+	if s == nil || s.Node == nil || s.Wallet == nil {
+		return nil
+	}
+	if limit <= 0 {
+		limit = 6
+	}
+
+	activities := make([]WalletActivity, 0, limit)
+	seen := make(map[string]struct{})
+
+	now := time.Now().Unix()
+	for _, txBytes := range s.Node.Mempool.GetAll() {
+		tx, err := blockchain.DeserializeTransaction(txBytes)
+		if err != nil {
+			continue
+		}
+		activity, ok := s.walletActivityForTx(*tx, "Pending", 0, now)
+		if !ok {
+			continue
+		}
+		activities = append(activities, activity)
+		seen[tx.ID] = struct{}{}
+	}
+
+	s.Node.Lock()
+	chainCopy := append([]*blockchain.Block(nil), s.Node.Chain...)
+	s.Node.Unlock()
+
+	var bestHeight uint64
+	if len(chainCopy) > 0 {
+		bestHeight = chainCopy[len(chainCopy)-1].Height
+	}
+
+	for i := len(chainCopy) - 1; i >= 0 && len(activities) < limit*3; i-- {
+		block := chainCopy[i]
+		confirmations := int(bestHeight-block.Height) + 1
+		for j := len(block.Transactions) - 1; j >= 0; j-- {
+			tx := block.Transactions[j]
+			if _, exists := seen[tx.ID]; exists {
+				continue
+			}
+			activity, ok := s.walletActivityForTx(tx, "Confirmed", confirmations, block.Timestamp)
+			if !ok {
+				continue
+			}
+			activities = append(activities, activity)
+			seen[tx.ID] = struct{}{}
+		}
+	}
+
+	sort.SliceStable(activities, func(i, j int) bool {
+		if activities[i].Status != activities[j].Status {
+			return activities[i].Status == "Pending"
+		}
+		if activities[i].Timestamp != activities[j].Timestamp {
+			return activities[i].Timestamp > activities[j].Timestamp
+		}
+		return activities[i].TxID > activities[j].TxID
+	})
+
+	if len(activities) > limit {
+		activities = activities[:limit]
+	}
+	return activities
+}
+
+func (s *RPCServer) walletActivityForTx(tx blockchain.Transaction, status string, confirmations int, timestamp int64) (WalletActivity, bool) {
+	if s == nil || s.Wallet == nil {
+		return WalletActivity{}, false
+	}
+
+	walletAddr := s.Wallet.Address
+	activity := WalletActivity{
+		Status:        status,
+		Confirmations: confirmations,
+		TxID:          tx.ID,
+		Timestamp:     timestamp,
+	}
+
+	if tx.IsCoinbase {
+		credited := 0
+		for _, out := range tx.Outputs {
+			if out.To == walletAddr {
+				credited += out.Amount
+			}
+		}
+		if credited == 0 {
+			return WalletActivity{}, false
+		}
+		activity.Type = "Mining"
+		activity.Amount = float64(credited) / 100.0
+		return activity, true
+	}
+
+	fromWallet := false
+	for _, in := range tx.Inputs {
+		prevOut, err := s.lookupOutput(in.TxID, in.Index)
+		if err == nil && prevOut.To == walletAddr {
+			fromWallet = true
+			break
+		}
+	}
+
+	received := 0
+	sentToOthers := 0
+	for _, out := range tx.Outputs {
+		if out.To == walletAddr {
+			received += out.Amount
+		} else {
+			sentToOthers += out.Amount
+		}
+	}
+
+	switch {
+	case fromWallet && sentToOthers > 0:
+		activity.Type = "Outgoing"
+		activity.Amount = -float64(sentToOthers) / 100.0
+		return activity, true
+	case !fromWallet && received > 0:
+		activity.Type = "Incoming"
+		activity.Amount = float64(received) / 100.0
+		return activity, true
+	case fromWallet && received > 0:
+		activity.Type = "Self"
+		activity.Amount = float64(received) / 100.0
+		return activity, true
+	default:
+		return WalletActivity{}, false
+	}
 }

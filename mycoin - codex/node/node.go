@@ -77,6 +77,7 @@ type Node struct {
 	Miner          *miner.Miner
 	DB             *database.BoltDB
 	MinerResetChan chan bool
+	MiningEnabled  bool
 	Broadcaster    BlockBroadcaster
 	SyncState      SyncState
 	IsSyncing      bool
@@ -197,6 +198,7 @@ func NewNode(mode string, datadir string) *Node {
 		Orphans:        make(map[string][]*blockchain.Block),
 		DB:             db,
 		MinerResetChan: make(chan bool, 1),
+		MiningEnabled:  true,
 		// ==========================================
 		// 🚨 探長加碼：給節點戴上「實習生」臂章
 		// 確保它一出生就知道自己該先安靜同步！
@@ -240,6 +242,11 @@ func (n *Node) Mine() {
 	}
 
 	for {
+		if !n.IsMiningEnabled() {
+			time.Sleep(1 * time.Second)
+			continue
+		}
+
 		// 1. 同步檢查
 		if !n.IsSynced() {
 			time.Sleep(2 * time.Second)
@@ -1246,6 +1253,33 @@ func (n *Node) GetResetChan() chan bool {
 		n.MinerResetChan = make(chan bool, 1)
 	}
 	return n.MinerResetChan
+}
+
+func (n *Node) IsMiningEnabled() bool {
+	n.mu.Lock()
+	defer n.mu.Unlock()
+
+	return n.MiningEnabled
+}
+
+func (n *Node) SetMiningEnabled(enabled bool) bool {
+	n.mu.Lock()
+	changed := n.MiningEnabled != enabled
+	n.MiningEnabled = enabled
+	if n.MinerResetChan == nil {
+		n.MinerResetChan = make(chan bool, 1)
+	}
+	resetChan := n.MinerResetChan
+	n.mu.Unlock()
+
+	if changed && !enabled {
+		select {
+		case resetChan <- true:
+		default:
+		}
+	}
+
+	return changed
 }
 
 // HasMissingBodies 檢查本地索引中是否存有「有頭無身」的區塊

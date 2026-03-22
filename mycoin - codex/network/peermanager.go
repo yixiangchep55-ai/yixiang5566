@@ -100,6 +100,10 @@ func (pm *PeerManager) isSelfDialAddress(addr string) bool {
 
 func (pm *PeerManager) Start() {
 	pm.LoadStaticSeeds()
+	go func() {
+		pm.QueryDNSSeeds()
+		pm.ensurePeers()
+	}()
 
 	known := pm.LoadPeers()
 	if len(known) > 0 {
@@ -111,6 +115,7 @@ func (pm *PeerManager) Start() {
 	}
 
 	pm.startListener()
+	pm.ensurePeers()
 	go pm.maintain()
 }
 

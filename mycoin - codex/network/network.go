@@ -26,6 +26,23 @@ func NewNetwork(handler *Handler) *Network {
 	}
 }
 
+func (n *Network) PeerCount() int {
+	if n == nil {
+		return 0
+	}
+
+	n.mu.Lock()
+	defer n.mu.Unlock()
+
+	count := 0
+	for _, peer := range n.Peers {
+		if peer != nil && !peer.IsClosed() {
+			count++
+		}
+	}
+	return count
+}
+
 func (n *Network) AddConn(conn net.Conn) {
 	peer := NewPeer(conn)
 
