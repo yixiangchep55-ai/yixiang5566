@@ -1,3 +1,5 @@
+//go:build explorerui
+
 package uiembed
 
 import (

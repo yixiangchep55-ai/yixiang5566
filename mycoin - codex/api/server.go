@@ -9,6 +9,7 @@ import (
 	"mycoin/indexer"
 	uiembed "mycoin/mycoin-explorer"
 	"net/http"
+	"net/url"
 	"os"
 	"sort"
 	"strings"
@@ -119,7 +120,7 @@ func StartServer(port string) {
 	mux.HandleFunc("/api/miner/control", setMiningControl)
 	mux.Handle("/", explorerUIHandler())
 
-	fmt.Printf("[API] Explorer + Dashboard listening at http://localhost:%s\n", port)
+	fmt.Printf("[API] Dashboard API listening at http://localhost:%s\n", port)
 	if err := http.ListenAndServe(":"+port, mux); err != nil {
 		fmt.Println("[API] server failed:", err)
 	}
@@ -128,8 +129,18 @@ func StartServer(port string) {
 func explorerUIHandler() http.Handler {
 	distFS, err := uiembed.DistFS()
 	if err != nil {
+		externalExplorer := strings.TrimSpace(os.Getenv("MYCOIN_EXPLORER_URL"))
+		if externalExplorer != "" {
+			return explorerRedirectHandler(externalExplorer)
+		}
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			http.Error(w, "embedded frontend is unavailable", http.StatusInternalServerError)
+			if strings.HasPrefix(r.URL.Path, "/api/") {
+				http.NotFound(w, r)
+				return
+			}
+			w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+			w.WriteHeader(http.StatusServiceUnavailable)
+			_, _ = w.Write([]byte("Explorer UI is not bundled in this node build. Build with -tags explorerui after generating mycoin-explorer/dist, or set MYCOIN_EXPLORER_URL to your shared explorer."))
 		})
 	}
 
@@ -159,6 +170,29 @@ func explorerUIHandler() http.Handler {
 		w.Header().Set("Content-Type", "text/html; charset=utf-8")
 		w.WriteHeader(http.StatusOK)
 		_, _ = w.Write(indexHTML)
+	})
+}
+
+func explorerRedirectHandler(base string) http.Handler {
+	target, err := url.Parse(base)
+	if err != nil {
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			if strings.HasPrefix(r.URL.Path, "/api/") {
+				http.NotFound(w, r)
+				return
+			}
+			http.Error(w, "configured explorer URL is invalid", http.StatusInternalServerError)
+		})
+	}
+
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.HasPrefix(r.URL.Path, "/api/") {
+			http.NotFound(w, r)
+			return
+		}
+
+		ref := &url.URL{Path: r.URL.Path, RawQuery: r.URL.RawQuery, Fragment: r.URL.Fragment}
+		http.Redirect(w, r, target.ResolveReference(ref).String(), http.StatusTemporaryRedirect)
 	})
 }
 
