@@ -12,17 +12,18 @@ import (
 )
 
 var DefaultSeeds = []string{
-	//"192.168.100.169:9001",
-	//"192.168.100.215:9001",
+	// "192.168.100.169:9001",
+	// "192.168.100.215:9001",
 }
 
 type PeerManager struct {
 	Network *Network
 	AddrMgr *AddrManager
 
-	Active   map[string]*Peer
-	Inbound  int
-	Outbound int
+	Active       map[string]*Peer
+	PendingDials map[string]time.Time
+	Inbound      int
+	Outbound     int
 
 	MaxPeers int
 	ListenOn string
@@ -32,11 +33,12 @@ type PeerManager struct {
 
 func NewPeerManager(netw *Network, listen string, maxPeers int) *PeerManager {
 	return &PeerManager{
-		Network:  netw,
-		AddrMgr:  NewAddrManager(),
-		Active:   make(map[string]*Peer),
-		MaxPeers: maxPeers,
-		ListenOn: listen,
+		Network:      netw,
+		AddrMgr:      NewAddrManager(),
+		Active:       make(map[string]*Peer),
+		PendingDials: make(map[string]time.Time),
+		MaxPeers:     maxPeers,
+		ListenOn:     listen,
 	}
 }
 
@@ -46,6 +48,20 @@ func normalizeHost(host string) string {
 		return "127.0.0.1"
 	}
 	return host
+}
+
+func normalizePeerAddr(addr string) string {
+	addr = strings.TrimSpace(addr)
+	if addr == "" {
+		return ""
+	}
+
+	host, port, err := net.SplitHostPort(addr)
+	if err != nil || port == "" {
+		return ""
+	}
+
+	return net.JoinHostPort(normalizeHost(host), port)
 }
 
 func (pm *PeerManager) isLocalHost(host string) bool {
@@ -85,6 +101,11 @@ func (pm *PeerManager) isLocalHost(host string) bool {
 }
 
 func (pm *PeerManager) isSelfDialAddress(addr string) bool {
+	addr = normalizePeerAddr(addr)
+	if addr == "" {
+		return false
+	}
+
 	host, port, err := net.SplitHostPort(addr)
 	if err != nil {
 		return false
@@ -107,7 +128,7 @@ func (pm *PeerManager) Start() {
 
 	known := pm.LoadPeers()
 	if len(known) > 0 {
-		log.Println("🌐 Restoring peers:", known)
+		log.Println("Restoring peers:", known)
 	}
 
 	for _, addr := range known {
@@ -124,7 +145,7 @@ func (pm *PeerManager) startListener() {
 	if err != nil {
 		log.Fatal(err)
 	}
-	log.Println("🌐 P2P listening on", pm.ListenOn)
+	log.Println("P2P listening on", pm.ListenOn)
 
 	go func() {
 		for {
@@ -132,38 +153,98 @@ func (pm *PeerManager) startListener() {
 			if err != nil {
 				continue
 			}
-			pm.onNewConn(conn, false)
+			pm.onNewConn(conn, false, "")
 		}
 	}()
 }
 
-func (pm *PeerManager) Connect(addr string) {
-	if pm.isSelfDialAddress(addr) {
+func (pm *PeerManager) cleanupPendingDialsLocked(now time.Time) {
+	for addr, startedAt := range pm.PendingDials {
+		if now.Sub(startedAt) > 15*time.Second {
+			delete(pm.PendingDials, addr)
+		}
+	}
+}
+
+func (pm *PeerManager) hasActiveOrPendingAddrLocked(addr string) bool {
+	addr = normalizePeerAddr(addr)
+	if addr == "" {
+		return true
+	}
+
+	if startedAt, ok := pm.PendingDials[addr]; ok {
+		if time.Since(startedAt) <= 15*time.Second {
+			return true
+		}
+		delete(pm.PendingDials, addr)
+	}
+
+	if existing, ok := pm.Active[addr]; ok && existing != nil && !existing.IsClosed() {
+		return true
+	}
+
+	for _, peer := range pm.Active {
+		if peer == nil || peer.IsClosed() {
+			continue
+		}
+		if normalizePeerAddr(peer.AdvertiseAddr) == addr {
+			return true
+		}
+	}
+
+	return false
+}
+
+func (pm *PeerManager) clearPendingDial(addr string) {
+	addr = normalizePeerAddr(addr)
+	if addr == "" {
 		return
 	}
 
 	pm.mu.Lock()
-	if pm.Outbound >= pm.MaxPeers/2 {
+	delete(pm.PendingDials, addr)
+	pm.mu.Unlock()
+}
+
+func (pm *PeerManager) Connect(addr string) {
+	addr = normalizePeerAddr(addr)
+	if addr == "" || pm.isSelfDialAddress(addr) {
+		return
+	}
+
+	pm.mu.Lock()
+	now := time.Now()
+	pm.cleanupPendingDialsLocked(now)
+	if pm.Outbound >= pm.MaxPeers/2 || pm.hasActiveOrPendingAddrLocked(addr) {
 		pm.mu.Unlock()
 		return
 	}
-	if existing, ok := pm.Active[addr]; ok {
-		if !existing.IsClosed() {
-			pm.mu.Unlock()
-			return
-		}
-	}
+	pm.PendingDials[addr] = now
 	pm.mu.Unlock()
 
 	conn, err := net.Dial("tcp", addr)
 	if err != nil {
+		pm.clearPendingDial(addr)
 		return
 	}
 
-	pm.onNewConn(conn, true)
+	pm.onNewConn(conn, true, addr)
+	pm.clearPendingDial(addr)
 
 	pm.mu.Lock()
 	p, ok := pm.Active[addr]
+	if !ok {
+		for _, candidate := range pm.Active {
+			if candidate == nil || candidate.IsClosed() {
+				continue
+			}
+			if normalizePeerAddr(candidate.AdvertiseAddr) == addr {
+				p = candidate
+				ok = true
+				break
+			}
+		}
+	}
 	pm.mu.Unlock()
 	if ok {
 		pm.SavePeer(p)
@@ -219,33 +300,34 @@ func (pm *PeerManager) cleanup() {
 	}
 }
 
-func (pm *PeerManager) onNewConn(conn net.Conn, outbound bool) {
+func (pm *PeerManager) onNewConn(conn net.Conn, outbound bool, dialAddr string) {
 	remote := conn.RemoteAddr().String()
 	remoteIP, _, _ := net.SplitHostPort(remote)
 	localIP, _, _ := net.SplitHostPort(pm.ListenOn)
 
 	if remoteIP == localIP {
-		log.Println("⛔ Reject self-connection from", remote)
-		conn.Close()
+		log.Println("Reject self-connection from", remote)
+		_ = conn.Close()
 		return
 	}
 
 	peer := NewPeer(conn)
 	peer.Outbound = outbound
 	peer.onDisconnect = pm.removePeer
-
-	if outbound && (pm.Network.Node == nil || pm.Network.Node.Best == nil) {
-		log.Println("⚠️ [Network] Node 尚未就緒，拒絕 outbound handshake:", peer.Addr)
-		conn.Close()
-		return
+	if outbound {
+		peer.AdvertiseAddr = normalizePeerAddr(dialAddr)
 	}
 
-	pm.AddrMgr.Add(peer.Addr)
+	if outbound && (pm.Network.Node == nil || pm.Network.Node.Best == nil) {
+		log.Println("[Network] Node not ready, rejecting outbound handshake:", peer.Addr)
+		peer.CloseWithReason("local node not ready for outbound handshake")
+		return
+	}
 
 	pm.mu.Lock()
 	if len(pm.Active) >= pm.MaxPeers {
 		pm.mu.Unlock()
-		conn.Close()
+		peer.CloseWithReason("max peers reached")
 		return
 	}
 	pm.Active[peer.Addr] = peer
@@ -256,47 +338,93 @@ func (pm *PeerManager) onNewConn(conn net.Conn, outbound bool) {
 	}
 	pm.mu.Unlock()
 
-	if !outbound {
-		go pm.RelayAddress(peer.Addr)
-	}
-
 	go peer.ReadLoop(pm.Network.Handler.OnMessage)
 
 	if outbound {
+		height := uint64(0)
+		cumWork := "0"
+		mode := ""
+		if pm.Network.Node != nil && pm.Network.Node.Best != nil {
+			height = pm.Network.Node.Best.Height
+			cumWork = pm.Network.Node.Best.CumWork
+			mode = pm.Network.Node.Mode
+		}
 		peer.Send(Message{
 			Type: MsgVersion,
 			Data: VersionPayload{
-				Version: 1,
-				Height:  pm.Network.Node.Best.Height,
-				CumWork: pm.Network.Node.Best.CumWork,
-				NodeID:  pm.Network.Node.NodeID,
+				Version:       1,
+				Height:        height,
+				CumWork:       cumWork,
+				NodeID:        pm.Network.Node.NodeID,
+				Mode:          mode,
+				AdvertiseAddr: pm.Network.Handler.LocalVersion.AdvertiseAddr,
 			},
 		})
-		log.Println("🚀 Sent version handshake to", peer.Addr)
+		log.Println("Sent version handshake to", peer.Addr)
 	}
 }
 
-func (pm *PeerManager) RelayAddress(newAddr string) {
-	host, _, err := net.SplitHostPort(newAddr)
-	if err != nil {
-		log.Println("⚠️ [Relay] 無法解析地址:", newAddr)
-		return
+func (pm *PeerManager) SetPeerAdvertiseAddr(peer *Peer, addr string) string {
+	if peer == nil {
+		return ""
 	}
-	correctAddr := host + ":9001"
+
+	normalized := normalizePeerAddr(addr)
 
 	pm.mu.Lock()
 	defer pm.mu.Unlock()
+
+	if normalized != "" {
+		peer.AdvertiseAddr = normalized
+	}
+
+	return peer.AdvertiseAddr
+}
+
+func (pm *PeerManager) RegisterPeerAdvertiseAddr(peer *Peer) {
+	if peer == nil {
+		return
+	}
+
+	addr := normalizePeerAddr(peer.AdvertiseAddr)
+	if addr == "" || pm.isSelfDialAddress(addr) {
+		return
+	}
+
+	added := pm.AddrMgr.Add(addr)
+	pm.SavePeer(peer)
+	if added {
+		go pm.RelayAddress(peer, addr)
+	}
+}
+
+func (pm *PeerManager) RelayAddress(source *Peer, newAddr string) {
+	correctAddr := normalizePeerAddr(newAddr)
+	if correctAddr == "" || pm.isSelfDialAddress(correctAddr) {
+		return
+	}
+
+	pm.mu.Lock()
+	recipients := make([]*Peer, 0, len(pm.Active))
+	for _, peer := range pm.Active {
+		if peer == nil || peer == source || peer.State != StateActive || peer.IsClosed() {
+			continue
+		}
+		if normalizePeerAddr(peer.AdvertiseAddr) == correctAddr {
+			continue
+		}
+		recipients = append(recipients, peer)
+	}
+	pm.mu.Unlock()
 
 	msg := Message{
 		Type: MsgAddr,
 		Data: []string{correctAddr},
 	}
 
-	for addr, peer := range pm.Active {
-		if addr != newAddr && peer.State == StateActive {
-			log.Printf("📢 [Relay] 向 %s 推薦新節點: %s\n", addr, correctAddr)
-			peer.Send(msg)
-		}
+	for _, peer := range recipients {
+		log.Printf("[Relay] telling %s about peer %s\n", peer.Addr, correctAddr)
+		peer.Send(msg)
 	}
 }
 
@@ -329,22 +457,46 @@ func (pm *PeerManager) maintain() {
 }
 
 func (pm *PeerManager) SavePeer(p *Peer) {
+	if p == nil {
+		return
+	}
+
+	savedAddr := normalizePeerAddr(p.AdvertiseAddr)
+	if savedAddr == "" {
+		if !p.Outbound {
+			return
+		}
+		savedAddr = normalizePeerAddr(p.Addr)
+		if savedAddr == "" {
+			return
+		}
+	}
+
 	info := PeerInfo{
-		Addr:     p.Addr,
+		Addr:     savedAddr,
 		LastSeen: time.Now().Unix(),
 		NodeID:   p.NodeID,
 		Height:   int(p.Height),
 	}
 
 	data, _ := json.Marshal(info)
-	pm.Network.Node.DB.Put("peerstore", p.Addr, data)
+	pm.Network.Node.DB.Put("peerstore", savedAddr, data)
 }
 
 func (pm *PeerManager) LoadPeers() []string {
 	var peers []string
+	seen := make(map[string]struct{})
 
 	pm.Network.Node.DB.Iterate("peerstore", func(k, v []byte) {
-		peers = append(peers, string(k))
+		addr := normalizePeerAddr(string(k))
+		if addr == "" || pm.isSelfDialAddress(addr) {
+			return
+		}
+		if _, exists := seen[addr]; exists {
+			return
+		}
+		seen[addr] = struct{}{}
+		peers = append(peers, addr)
 	})
 
 	return peers
@@ -352,12 +504,12 @@ func (pm *PeerManager) LoadPeers() []string {
 
 func (pm *PeerManager) LoadStaticSeeds() {
 	for _, seed := range DefaultSeeds {
-		if pm.isSelfDialAddress(seed) {
-			log.Println("⛔ skipping self seed:", seed)
+		seed = normalizePeerAddr(seed)
+		if seed == "" || pm.isSelfDialAddress(seed) {
 			continue
 		}
 		pm.AddrMgr.Add(seed)
-		log.Println("📌 static seed added:", seed)
+		log.Println("static seed added:", seed)
 	}
 }
 
@@ -379,18 +531,17 @@ func (pm *PeerManager) QueryDNSSeeds() {
 	for _, domain := range seeds {
 		ips, err := resolver.LookupHost(ctx, domain)
 		if err != nil {
-			log.Println("⚠️ DNS seed lookup failed:", domain, err)
+			log.Println("DNS seed lookup failed:", domain, err)
 			continue
 		}
 
 		for _, ip := range ips {
-			if strings.Contains(ip, ":") {
-				ip = "[" + ip + "]"
+			addr := normalizePeerAddr(net.JoinHostPort(ip, "9001"))
+			if addr == "" || pm.isSelfDialAddress(addr) {
+				continue
 			}
-
-			addr := ip + ":9001"
 			pm.AddrMgr.Add(addr)
-			log.Println("🌐 DNS seed discovered:", addr)
+			log.Println("DNS seed discovered:", addr)
 		}
 	}
 }

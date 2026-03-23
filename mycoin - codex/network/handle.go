@@ -189,16 +189,26 @@ func (h *Handler) handleVersion(peer *Peer, msg *Message) {
 	}
 
 	peer.NodeID = v.NodeID
+	if h.Network != nil && h.Network.PeerManager != nil {
+		h.Network.PeerManager.SetPeerAdvertiseAddr(peer, v.AdvertiseAddr)
+	}
 
 	if peer.State == StateInit {
+		height := uint64(0)
+		cumWork := "0"
+		if h.Node != nil && h.Node.Best != nil {
+			height = h.Node.Best.Height
+			cumWork = h.Node.Best.CumWork
+		}
 		peer.Send(Message{
 			Type: MsgVersion,
 			Data: VersionPayload{
-				Version: 1,
-				Height:  h.Node.Best.Height,
-				CumWork: h.Node.Best.CumWork,
-				NodeID:  h.Node.NodeID,
-				Mode:    h.Node.Mode,
+				Version:       1,
+				Height:        height,
+				CumWork:       cumWork,
+				NodeID:        h.Node.NodeID,
+				Mode:          h.Node.Mode,
+				AdvertiseAddr: h.LocalVersion.AdvertiseAddr,
 			},
 		})
 		peer.State = StateVersionSent
@@ -264,6 +274,9 @@ func (h *Handler) handleVerAck(peer *Peer, msg *Message) {
 		h.Network.RecordPeerActive(peer.Addr, currentCount)
 
 		h.Network.mu.Unlock()
+		if h.Network.PeerManager != nil {
+			h.Network.PeerManager.RegisterPeerAdvertiseAddr(peer)
+		}
 
 		fmt.Printf("🔒 [Network] 已將 NodeID %d 強制加入廣播名單，目前連線數: %d\n", peer.NodeID, currentCount)
 
@@ -864,7 +877,7 @@ func (h *Handler) handleAddr(peer *Peer, msg *Message) {
 		}
 
 		pm.mu.Lock()
-		_, exists := pm.Active[addr]
+		exists := pm.hasActiveOrPendingAddrLocked(addr)
 		pm.mu.Unlock()
 		if exists {
 			continue

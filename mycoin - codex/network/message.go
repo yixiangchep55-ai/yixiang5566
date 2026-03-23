@@ -23,11 +23,12 @@ type Message struct {
 }
 
 type VersionPayload struct {
-	Version int    `json:"version" mapstructure:"version"`
-	Height  uint64 `json:"height" mapstructure:"height"`
-	CumWork string `json:"cum_work" mapstructure:"cum_work"`
-	NodeID  uint64 `json:"node_id" mapstructure:"node_id"`
-	Mode    string `json:"mode" mapstructure:"mode"`
+	Version       int    `json:"version" mapstructure:"version"`
+	Height        uint64 `json:"height" mapstructure:"height"`
+	CumWork       string `json:"cum_work" mapstructure:"cum_work"`
+	NodeID        uint64 `json:"node_id" mapstructure:"node_id"`
+	Mode          string `json:"mode" mapstructure:"mode"`
+	AdvertiseAddr string `json:"advertise_addr,omitempty" mapstructure:"advertise_addr"`
 }
 
 type InvPayload struct {

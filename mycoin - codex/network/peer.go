@@ -26,15 +26,16 @@ type PeerInfo struct {
 }
 
 type Peer struct {
-	Conn     net.Conn
-	Addr     string
-	State    PeerState
-	Height   uint64
-	CumWork  string
-	LastSeen int64
-	Outbound bool
-	NodeID   uint64
-	Mode     string
+	Conn          net.Conn
+	Addr          string
+	AdvertiseAddr string
+	State         PeerState
+	Height        uint64
+	CumWork       string
+	LastSeen      int64
+	Outbound      bool
+	NodeID        uint64
+	Mode          string
 
 	mu  sync.Mutex
 	enc *json.Encoder
