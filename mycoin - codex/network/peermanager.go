@@ -234,6 +234,12 @@ func (pm *PeerManager) onNewConn(conn net.Conn, outbound bool) {
 	peer.Outbound = outbound
 	peer.onDisconnect = pm.removePeer
 
+	if outbound && (pm.Network.Node == nil || pm.Network.Node.Best == nil) {
+		log.Println("⚠️ [Network] Node 尚未就緒，拒絕 outbound handshake:", peer.Addr)
+		conn.Close()
+		return
+	}
+
 	pm.AddrMgr.Add(peer.Addr)
 
 	pm.mu.Lock()
@@ -257,11 +263,6 @@ func (pm *PeerManager) onNewConn(conn net.Conn, outbound bool) {
 	go peer.ReadLoop(pm.Network.Handler.OnMessage)
 
 	if outbound {
-		if pm.Network.Node == nil || pm.Network.Node.Best == nil {
-			log.Println("⚠️ [Network] Node 尚未就緒，暫緩 outbound handshake:", peer.Addr)
-			return
-		}
-
 		peer.Send(Message{
 			Type: MsgVersion,
 			Data: VersionPayload{

@@ -329,6 +329,15 @@ func (n *Node) Mine() {
 // 添加交易到 Mempool (最終完全體：支援 RBF)
 // --------------------
 func (n *Node) AddTx(tx blockchain.Transaction, fromNodeID uint64) bool {
+	if debugMempoolFlow {
+		fmt.Println("👉 [X-Ray] 準備鎖定 n.mu 大門...")
+	}
+	n.mu.Lock()
+	defer n.mu.Unlock()
+	if debugMempoolFlow {
+		fmt.Println("👉 [X-Ray] 成功鎖定 n.mu，開始執行保全檢查...")
+	}
+
 	// ==========================================
 	// 🕵️ 第一關：門口保全 (手續費檢查)
 	// ==========================================
@@ -339,14 +348,6 @@ func (n *Node) AddTx(tx blockchain.Transaction, fromNodeID uint64) bool {
 	if fee < MinRelayFee {
 		fmt.Printf("🚫 [Security] 交易 %s 手續費太低 (%d < %d)，直接在門外踢掉！\n", tx.ID[:8], fee, MinRelayFee)
 		return false
-	}
-	if debugMempoolFlow {
-		fmt.Println("👉 [X-Ray] 準備鎖定 n.mu 大門...")
-	}
-	n.mu.Lock()
-	defer n.mu.Unlock()
-	if debugMempoolFlow {
-		fmt.Println("👉 [X-Ray] 成功鎖定 n.mu，開始執行 VerifyTx...")
 	}
 
 	if err := VerifyTx(tx, n.UTXO, n.Mempool.Txs); err != nil {
@@ -1186,6 +1187,12 @@ func (n *Node) UpdateChainFromBest() {
 }
 
 func (n *Node) FindCommonAncestor(locator []string) *BlockIndex {
+	n.mu.Lock()
+	defer n.mu.Unlock()
+	return n.findCommonAncestorLocked(locator)
+}
+
+func (n *Node) findCommonAncestorLocked(locator []string) *BlockIndex {
 	// locator 中找到第一个已知区块（从最近到最远）
 	for _, hash := range locator {
 		if bi, ok := n.Blocks[hash]; ok {
@@ -1194,7 +1201,45 @@ func (n *Node) FindCommonAncestor(locator []string) *BlockIndex {
 	}
 
 	// 找不到，返回 genesis
-	return n.GetMainChainIndexByHeight(0)
+	cur := n.Best
+	for cur != nil && cur.Parent != nil {
+		cur = cur.Parent
+	}
+	return cur
+}
+
+func (n *Node) HeadersAfterLocators(locator []string, limit int) []*BlockIndex {
+	n.mu.Lock()
+	defer n.mu.Unlock()
+
+	if limit <= 0 {
+		limit = 2000
+	}
+
+	startHeight := int64(-1)
+	if ancestor := n.findCommonAncestorLocked(locator); ancestor != nil {
+		startHeight = int64(ancestor.Height)
+	}
+
+	path := make([]*BlockIndex, 0, limit)
+	for cur := n.Best; cur != nil && int64(cur.Height) > startHeight; cur = cur.Parent {
+		path = append(path, cur)
+	}
+
+	if len(path) == 0 {
+		return nil
+	}
+
+	start := 0
+	if len(path) > limit {
+		start = len(path) - limit
+	}
+
+	headers := make([]*BlockIndex, 0, len(path)-start)
+	for i := len(path) - 1; i >= start; i-- {
+		headers = append(headers, path[i])
+	}
+	return headers
 }
 
 func (n *Node) IsSynced() bool {
@@ -1350,31 +1395,63 @@ func (n *Node) SetMiningEnabled(enabled bool) bool {
 
 // HasMissingBodies 檢查本地索引中是否存有「有頭無身」的區塊
 func (n *Node) HasMissingBodies() bool {
+	n.mu.Lock()
+	defer n.mu.Unlock()
+	return n.hasMissingBodiesLocked()
+}
+
+func (n *Node) HasMissingBodiesLocked() bool {
+	return n.hasMissingBodiesLocked()
+}
+
+func (n *Node) hasMissingBodiesLocked() bool {
 	if n.Best == nil {
 		return false
 	}
 
-	// n.Chain 是目前已正式掛載的主鏈視圖。
-	// 同步時只需要檢查從新 best 往回走，到既有主鏈錨點之前是否仍有 header-only 區塊；
-	// 更早以前被 prune 的歷史缺口不應算成同步未完成。
-	committed := make(map[string]struct{}, len(n.Chain))
-	for _, block := range n.Chain {
-		if block == nil || len(block.Hash) == 0 {
-			continue
-		}
-		committed[hex.EncodeToString(block.Hash)] = struct{}{}
+	return len(n.missingBlockBodiesLocked(1)) > 0
+}
+
+func (n *Node) MissingBlockBodies(limit int) []*BlockIndex {
+	n.mu.Lock()
+	defer n.mu.Unlock()
+	return n.missingBlockBodiesLocked(limit)
+}
+
+func (n *Node) missingBlockBodiesLocked(limit int) []*BlockIndex {
+	if n.Best == nil {
+		return nil
+	}
+	if limit <= 0 {
+		limit = 16
 	}
 
+	chainStartHeight := uint64(0)
+	if len(n.Chain) > 0 && n.Chain[0] != nil {
+		chainStartHeight = n.Chain[0].Height
+	}
+
+	missing := make([]*BlockIndex, 0, limit)
 	for cur := n.Best; cur != nil && cur.Height > 0; cur = cur.Parent {
-		if cur.Block == nil {
-			return true
+		if cur.Block != nil && len(n.Chain) > 0 && cur.Height >= chainStartHeight {
+			idx := int(cur.Height - chainStartHeight)
+			if idx >= 0 && idx < len(n.Chain) {
+				committed := n.Chain[idx]
+				if committed != nil && hex.EncodeToString(committed.Hash) == cur.Hash {
+					break
+				}
+			}
 		}
-		if _, ok := committed[cur.Hash]; ok {
-			return false
+
+		if cur.Block == nil {
+			missing = append(missing, cur)
+			if len(missing) >= limit {
+				break
+			}
 		}
 	}
 
-	return false
+	return missing
 }
 
 func (n *Node) Lock() {
