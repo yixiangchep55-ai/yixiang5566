@@ -5,6 +5,7 @@ import (
 	"mycoin/node"
 	"net"
 	"sync"
+	"time"
 )
 
 type Network struct {
@@ -13,10 +14,25 @@ type Network struct {
 	Node        *node.Node
 	mu          sync.Mutex
 	PeerManager *PeerManager
+
+	diagMu         sync.Mutex
+	peerCountHint  int
+	lastPeerEvent  string
+	lastPeerAddr   string
+	lastPeerError  string
+	lastPeerSeenAt time.Time
 }
 
 type mempool struct {
 	AddrFrom uint64
+}
+
+type PeerDiagnostics struct {
+	CountHint  int
+	LastEvent  string
+	LastAddr   string
+	LastError  string
+	LastSeenAt time.Time
 }
 
 func NewNetwork(handler *Handler) *Network {
@@ -31,7 +47,9 @@ func (n *Network) PeerCount() int {
 		return 0
 	}
 
-	n.mu.Lock()
+	if !n.mu.TryLock() {
+		return n.peerCountFallback()
+	}
 	defer n.mu.Unlock()
 
 	count := 0
@@ -40,7 +58,73 @@ func (n *Network) PeerCount() int {
 			count++
 		}
 	}
+	n.setPeerCountHint(count)
 	return count
+}
+
+func (n *Network) peerCountFallback() int {
+	if n == nil {
+		return 0
+	}
+
+	n.diagMu.Lock()
+	defer n.diagMu.Unlock()
+	return n.peerCountHint
+}
+
+func (n *Network) setPeerCountHint(count int) {
+	if n == nil {
+		return
+	}
+
+	n.diagMu.Lock()
+	n.peerCountHint = count
+	n.diagMu.Unlock()
+}
+
+func (n *Network) RecordPeerActive(addr string, count int) {
+	if n == nil {
+		return
+	}
+
+	n.diagMu.Lock()
+	n.peerCountHint = count
+	n.lastPeerEvent = "active"
+	n.lastPeerAddr = addr
+	n.lastPeerError = ""
+	n.lastPeerSeenAt = time.Now()
+	n.diagMu.Unlock()
+}
+
+func (n *Network) RecordPeerDisconnected(addr, reason string, count int) {
+	if n == nil {
+		return
+	}
+
+	n.diagMu.Lock()
+	n.peerCountHint = count
+	n.lastPeerEvent = "disconnected"
+	n.lastPeerAddr = addr
+	n.lastPeerError = reason
+	n.lastPeerSeenAt = time.Now()
+	n.diagMu.Unlock()
+}
+
+func (n *Network) PeerDiagnostics() PeerDiagnostics {
+	if n == nil {
+		return PeerDiagnostics{}
+	}
+
+	n.diagMu.Lock()
+	defer n.diagMu.Unlock()
+
+	return PeerDiagnostics{
+		CountHint:  n.peerCountHint,
+		LastEvent:  n.lastPeerEvent,
+		LastAddr:   n.lastPeerAddr,
+		LastError:  n.lastPeerError,
+		LastSeenAt: n.lastPeerSeenAt,
+	}
 }
 
 func (n *Network) AddConn(conn net.Conn) {

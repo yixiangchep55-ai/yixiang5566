@@ -46,18 +46,22 @@ type DormantAddressSummary struct {
 }
 
 type DashboardNodeStatus struct {
-	NodeID        uint64 `json:"node_id"`
-	Mode          string `json:"mode"`
-	BestHeight    uint64 `json:"best_height"`
-	BestHash      string `json:"best_hash"`
-	Synced        bool   `json:"synced"`
-	SyncState     string `json:"sync_state"`
-	IsSyncing     bool   `json:"is_syncing"`
-	PeerCount     int    `json:"peer_count"`
-	MempoolCount  int    `json:"mempool_count"`
-	OrphanCount   int    `json:"orphan_count"`
-	MiningEnabled bool   `json:"mining_enabled"`
-	MiningAddress string `json:"mining_address"`
+	NodeID         uint64 `json:"node_id"`
+	Mode           string `json:"mode"`
+	BestHeight     uint64 `json:"best_height"`
+	BestHash       string `json:"best_hash"`
+	Synced         bool   `json:"synced"`
+	SyncState      string `json:"sync_state"`
+	IsSyncing      bool   `json:"is_syncing"`
+	PeerCount      int    `json:"peer_count"`
+	LastPeerEvent  string `json:"last_peer_event"`
+	LastPeerAddr   string `json:"last_peer_addr"`
+	LastPeerError  string `json:"last_peer_error"`
+	LastPeerSeenAt string `json:"last_peer_seen_at"`
+	MempoolCount   int    `json:"mempool_count"`
+	OrphanCount    int    `json:"orphan_count"`
+	MiningEnabled  bool   `json:"mining_enabled"`
+	MiningAddress  string `json:"mining_address"`
 }
 
 type DashboardWalletStatus struct {

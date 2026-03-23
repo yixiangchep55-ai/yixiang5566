@@ -175,6 +175,8 @@ func (pm *PeerManager) removePeer(peer *Peer) {
 		return
 	}
 
+	remainingCount := 0
+
 	pm.mu.Lock()
 	if current, ok := pm.Active[peer.Addr]; ok && current == peer {
 		delete(pm.Active, peer.Addr)
@@ -189,6 +191,7 @@ func (pm *PeerManager) removePeer(peer *Peer) {
 	pm.mu.Unlock()
 
 	if peer.NodeID == 0 {
+		pm.Network.RecordPeerDisconnected(peer.Addr, peer.DisconnectReason(), remainingCount)
 		return
 	}
 
@@ -196,7 +199,9 @@ func (pm *PeerManager) removePeer(peer *Peer) {
 	if current, ok := pm.Network.Peers[peer.NodeID]; ok && current == peer {
 		delete(pm.Network.Peers, peer.NodeID)
 	}
+	remainingCount = len(pm.Network.Peers)
 	pm.Network.mu.Unlock()
+	pm.Network.RecordPeerDisconnected(peer.Addr, peer.DisconnectReason(), remainingCount)
 }
 
 func (pm *PeerManager) cleanup() {

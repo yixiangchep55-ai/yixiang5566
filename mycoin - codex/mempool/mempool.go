@@ -140,6 +140,20 @@ func (m *Mempool) GetAll() map[string][]byte {
 	return out
 }
 
+func (m *Mempool) Count() int {
+	if m == nil {
+		return 0
+	}
+
+	if m.mu.TryLock() {
+		defer m.mu.Unlock()
+		m.pruneExpiredUnsafe(time.Now())
+		return len(m.Txs)
+	}
+
+	return len(m.Txs)
+}
+
 func (m *Mempool) Clear() {
 	m.mu.Lock()
 	defer m.mu.Unlock()

@@ -92,6 +92,19 @@ type BlockBroadcaster interface {
 	RequestHistoricalBlock(hashHex string)
 }
 
+type StatusSnapshot struct {
+	NodeID        uint64
+	Mode          string
+	BestHeight    uint64
+	BestHash      string
+	Synced        bool
+	SyncState     SyncState
+	IsSyncing     bool
+	OrphanCount   int
+	MiningEnabled bool
+	MiningAddress string
+}
+
 func (n *Node) HasBlock(hash []byte) bool {
 	key := hex.EncodeToString(hash)
 
@@ -1186,6 +1199,59 @@ func (n *Node) FindCommonAncestor(locator []string) *BlockIndex {
 
 func (n *Node) IsSynced() bool {
 	return n.SyncState == SyncSynced
+}
+
+func (n *Node) StatusSnapshot() StatusSnapshot {
+	if n == nil {
+		return StatusSnapshot{}
+	}
+
+	if !n.mu.TryLock() {
+		bestHeight := uint64(0)
+		bestHash := ""
+		if n.Best != nil {
+			bestHeight = n.Best.Height
+			bestHash = n.Best.Hash
+		}
+
+		return StatusSnapshot{
+			NodeID:        n.NodeID,
+			Mode:          n.Mode,
+			BestHeight:    bestHeight,
+			BestHash:      bestHash,
+			Synced:        n.SyncState == SyncSynced,
+			SyncState:     n.SyncState,
+			IsSyncing:     n.IsSyncing,
+			MiningEnabled: n.MiningEnabled,
+			MiningAddress: n.MiningAddress,
+		}
+	}
+	defer n.mu.Unlock()
+
+	bestHeight := uint64(0)
+	bestHash := ""
+	if n.Best != nil {
+		bestHeight = n.Best.Height
+		bestHash = n.Best.Hash
+	}
+
+	orphanCount := 0
+	for _, list := range n.Orphans {
+		orphanCount += len(list)
+	}
+
+	return StatusSnapshot{
+		NodeID:        n.NodeID,
+		Mode:          n.Mode,
+		BestHeight:    bestHeight,
+		BestHash:      bestHash,
+		Synced:        n.SyncState == SyncSynced,
+		SyncState:     n.SyncState,
+		IsSyncing:     n.IsSyncing,
+		OrphanCount:   orphanCount,
+		MiningEnabled: n.MiningEnabled,
+		MiningAddress: n.MiningAddress,
+	}
 }
 
 func (n *Node) updateUTXO(block *blockchain.Block) {

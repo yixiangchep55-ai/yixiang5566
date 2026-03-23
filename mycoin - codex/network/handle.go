@@ -100,6 +100,33 @@ func envBool(name string) bool {
 	}
 }
 
+func shouldPreferNewPeer(localNodeID uint64, existingPeer, newPeer *Peer) bool {
+	if existingPeer == nil {
+		return true
+	}
+	if newPeer == nil {
+		return false
+	}
+
+	preferredOutbound := localNodeID < newPeer.NodeID
+	existingMatches := existingPeer.Outbound == preferredOutbound
+	newMatches := newPeer.Outbound == preferredOutbound
+
+	if existingMatches != newMatches {
+		return newMatches
+	}
+
+	if existingPeer.Outbound != newPeer.Outbound {
+		return newPeer.Outbound == preferredOutbound
+	}
+
+	if existingPeer.Addr == newPeer.Addr {
+		return false
+	}
+
+	return newPeer.Addr < existingPeer.Addr
+}
+
 func (h *Handler) reserveBlockRequest(hash string) bool {
 	if hash == "" {
 		return false
@@ -220,6 +247,7 @@ func (h *Handler) handleVerAck(peer *Peer, msg *Message) {
 
 		h.Network.mu.Lock() // 🔒 上鎖
 		h.pruneClosedPeersLocked()
+		var peerToClose *Peer
 
 		// =================================================================
 		// 🛑 企業級防禦 1：這是不是我自己？(防自我連線)
@@ -227,8 +255,8 @@ func (h *Handler) handleVerAck(peer *Peer, msg *Message) {
 		// 假設你的 NodeID 存在 h.Network.Node.NodeID 裡面
 		if peer.NodeID == h.Network.Node.NodeID {
 			fmt.Println("❌ 警告：偵測到自我連線 (NodeID 相同)，拒絕加入名單！")
-			peer.Close()
 			h.Network.mu.Unlock()
+			peer.CloseWithReason("self connection rejected")
 			return
 		}
 
@@ -243,9 +271,14 @@ func (h *Handler) handleVerAck(peer *Peer, msg *Message) {
 			}
 
 			fmt.Printf("🔄 偵測到重複的節點 NodeID: %d，保留舊連線 %s，斷開新連線...\n", peer.NodeID, existingPeer.Addr)
-			peer.Close()
-			h.Network.mu.Unlock()
-			return
+			if shouldPreferNewPeer(h.Network.Node.NodeID, existingPeer, peer) {
+				delete(h.Network.Peers, peer.NodeID)
+				peerToClose = existingPeer
+			} else {
+				h.Network.mu.Unlock()
+				peer.CloseWithReason(fmt.Sprintf("duplicate node id %d: preferred %s", peer.NodeID, existingPeer.Addr))
+				return
+			}
 		}
 
 		// =================================================================
@@ -257,12 +290,16 @@ func (h *Handler) handleVerAck(peer *Peer, msg *Message) {
 		// 🔥 關鍵修改：用 NodeID 存進 Map！
 		h.Network.Peers[peer.NodeID] = peer
 		currentCount := len(h.Network.Peers)
+		h.Network.RecordPeerActive(peer.Addr, currentCount)
 
 		h.Network.mu.Unlock() // 🔓 解鎖
 
 		fmt.Printf("🔒 [Network] 已將 NodeID %d 強制加入廣播名單，目前連線數: %d\n", peer.NodeID, currentCount)
 
 		// 🌐 地址發現
+		if peerToClose != nil {
+			peerToClose.CloseWithReason(fmt.Sprintf("duplicate node id %d: preferred %s", peer.NodeID, peer.Addr))
+		}
 		peer.Send(Message{Type: MsgGetAddr})
 
 		// 🧱 headers-first 同步啟動

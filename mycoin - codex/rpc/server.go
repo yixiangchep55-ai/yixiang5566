@@ -82,36 +82,46 @@ func (s *RPCServer) handleRPC(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 
+		snapshot := s.Node.StatusSnapshot()
+
 		peerCount := 0
+		lastPeerEvent := ""
+		lastPeerAddr := ""
+		lastPeerError := ""
+		lastPeerSeenAt := ""
 		if s.Handler != nil && s.Handler.Network != nil {
 			peerCount = s.Handler.Network.PeerCount()
-		}
-
-		bestHeight := uint64(0)
-		bestHash := ""
-		if s.Node.Best != nil {
-			bestHeight = s.Node.Best.Height
-			bestHash = s.Node.Best.Hash
+			diag := s.Handler.Network.PeerDiagnostics()
+			lastPeerEvent = diag.LastEvent
+			lastPeerAddr = diag.LastAddr
+			lastPeerError = diag.LastError
+			if !diag.LastSeenAt.IsZero() {
+				lastPeerSeenAt = diag.LastSeenAt.Format(time.RFC3339)
+			}
 		}
 
 		mempoolCount := 0
 		if s.Node.Mempool != nil {
-			mempoolCount = len(s.Node.Mempool.GetAll())
+			mempoolCount = s.Node.Mempool.Count()
 		}
 
 		s.writeResult(w, req.ID, map[string]interface{}{
-			"node_id":        s.Node.NodeID,
-			"mode":           s.Node.Mode,
-			"best_height":    bestHeight,
-			"best_hash":      bestHash,
-			"synced":         s.Node.IsSynced(),
-			"sync_state":     syncStateLabel(s.Node.SyncState),
-			"is_syncing":     s.Node.IsSyncing,
-			"peer_count":     peerCount,
-			"mempool_count":  mempoolCount,
-			"orphan_count":   len(s.Node.GetOrphanBlocks()),
-			"mining_enabled": s.Node.IsMiningEnabled(),
-			"mining_address": s.Node.MiningAddress,
+			"node_id":           snapshot.NodeID,
+			"mode":              snapshot.Mode,
+			"best_height":       snapshot.BestHeight,
+			"best_hash":         snapshot.BestHash,
+			"synced":            snapshot.Synced,
+			"sync_state":        syncStateLabel(snapshot.SyncState),
+			"is_syncing":        snapshot.IsSyncing,
+			"peer_count":        peerCount,
+			"last_peer_event":   lastPeerEvent,
+			"last_peer_addr":    lastPeerAddr,
+			"last_peer_error":   lastPeerError,
+			"last_peer_seen_at": lastPeerSeenAt,
+			"mempool_count":     mempoolCount,
+			"orphan_count":      snapshot.OrphanCount,
+			"mining_enabled":    snapshot.MiningEnabled,
+			"mining_address":    snapshot.MiningAddress,
 		})
 
 	case "setminingenabled":

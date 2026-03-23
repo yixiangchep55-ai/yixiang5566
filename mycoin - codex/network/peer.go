@@ -40,9 +40,10 @@ type Peer struct {
 	enc *json.Encoder
 	dec *json.Decoder
 
-	onDisconnect func(*Peer)
-	disconnectMu sync.Mutex
-	disconnected bool
+	onDisconnect     func(*Peer)
+	disconnectMu     sync.Mutex
+	disconnected     bool
+	disconnectReason string
 
 	lastVersionMu      sync.Mutex
 	lastVersionHeight  uint64
@@ -80,6 +81,7 @@ func (p *Peer) Send(msg Message) bool {
 	err := p.enc.Encode(msg)
 	if err != nil {
 		log.Printf("⚠️ [Network] 發送訊息失敗給 %s: %v\n", p.Addr, err)
+		p.setDisconnectReason(err.Error())
 		p.closeLocked()
 		p.mu.Unlock()
 		p.notifyDisconnected()
@@ -95,8 +97,8 @@ func (p *Peer) ReadLoop(onMessage func(*Peer, *Message)) {
 	for {
 		var msg Message
 		if err := p.dec.Decode(&msg); err != nil {
-			p.Close()
-			log.Println("❌ peer disconnected:", p.Addr)
+			p.CloseWithReason(err.Error())
+			log.Printf("❌ peer disconnected: %s (%v)\n", p.Addr, err)
 			return
 		}
 
@@ -118,10 +120,31 @@ func (p *Peer) IsActive() bool {
 }
 
 func (p *Peer) Close() {
+	p.CloseWithReason("")
+}
+
+func (p *Peer) CloseWithReason(reason string) {
+	if reason != "" {
+		p.setDisconnectReason(reason)
+	}
 	p.mu.Lock()
 	p.closeLocked()
 	p.mu.Unlock()
 	p.notifyDisconnected()
+}
+
+func (p *Peer) setDisconnectReason(reason string) {
+	p.disconnectMu.Lock()
+	if reason != "" {
+		p.disconnectReason = reason
+	}
+	p.disconnectMu.Unlock()
+}
+
+func (p *Peer) DisconnectReason() string {
+	p.disconnectMu.Lock()
+	defer p.disconnectMu.Unlock()
+	return p.disconnectReason
 }
 
 func (p *Peer) notifyDisconnected() {
