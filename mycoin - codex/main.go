@@ -70,6 +70,12 @@ func main() {
 	genesisHash := hex.EncodeToString(nd.Chain[0].Hash)
 	nodeHeight := len(nd.Chain)
 	indexer.InitDB(genesisHash, nodeHeight)
+	if required, reason := indexer.DetectBackfillNeed(nd.Chain); required {
+		fmt.Printf("[Indexer] Startup check requires backfill: %s\\n", reason)
+		if err := indexer.BackfillMainChain(genesisHash, nd.Chain); err != nil {
+			fmt.Printf("[Indexer] Historical backfill failed: %v\\n", err)
+		}
+	}
 
 	walletPath := filepath.Join(*datadir, "miner.dat")
 	minerWallet := loadOrCreateMinerWallet(walletPath)
