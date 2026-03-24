@@ -82,8 +82,7 @@ func main() {
 	nd.Broadcaster = handler
 
 	listenAddr := "0.0.0.0:9001"
-	publicIP := detectBestIP()
-	advertiseAddr := net.JoinHostPort(publicIP, "9001")
+	advertiseAddr := resolveAdvertiseAddr()
 
 	handler.LocalVersion = network.VersionPayload{
 		Version:       1,
@@ -136,6 +135,19 @@ func main() {
 	go api.StartServer("8080")
 
 	select {}
+}
+
+func resolveAdvertiseAddr() string {
+	if explicit := os.Getenv("MYCOIN_ADVERTISE_ADDR"); explicit != "" {
+		return explicit
+	}
+
+	if publicIP := os.Getenv("MYCOIN_PUBLIC_IP"); publicIP != "" {
+		return net.JoinHostPort(publicIP, "9001")
+	}
+
+	publicIP := detectBestIP()
+	return net.JoinHostPort(publicIP, "9001")
 }
 
 func detectBestIP() string {

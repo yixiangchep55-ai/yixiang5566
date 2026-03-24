@@ -1281,8 +1281,33 @@ func (n *Node) StatusSnapshot() StatusSnapshot {
 	}
 
 	orphanCount := 0
+	seen := make(map[string]struct{})
 	for _, list := range n.Orphans {
-		orphanCount += len(list)
+		for _, blk := range list {
+			if blk == nil {
+				continue
+			}
+			hashHex := hex.EncodeToString(blk.Hash)
+			if _, exists := seen[hashHex]; exists {
+				continue
+			}
+			seen[hashHex] = struct{}{}
+			orphanCount++
+		}
+	}
+
+	for _, bi := range n.Blocks {
+		if bi == nil || bi.Block == nil || bi.Height == 0 {
+			continue
+		}
+		if n.IsOnMainChain(bi) {
+			continue
+		}
+		if _, exists := seen[bi.Hash]; exists {
+			continue
+		}
+		seen[bi.Hash] = struct{}{}
+		orphanCount++
 	}
 
 	return StatusSnapshot{
