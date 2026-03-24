@@ -362,9 +362,11 @@ const copyTransactionId = async (txid) => {
   await copyToClipboard(txid);
 };
 
+const apiUrl = (path) => new URL(path, window.location.origin).toString();
+
 const fetchBlocks = async () => {
   try {
-    const res = await fetch("http://localhost:8080/api/blocks");
+    const res = await fetch(apiUrl("/api/blocks"));
     if (res.ok) mainBlocks.value = await res.json();
   } catch (error) {
     console.error("API 連線失敗！", error);
@@ -373,7 +375,7 @@ const fetchBlocks = async () => {
 
 const fetchDormantAddresses = async () => {
   try {
-    const res = await fetch("http://localhost:8080/api/dormant-addresses");
+    const res = await fetch(apiUrl("/api/dormant-addresses"));
     if (res.ok) {
       const data = await res.json();
       dormantAddresses.value = Array.isArray(data) ? data : [];
@@ -395,7 +397,7 @@ const fetchDormantAddresses = async () => {
 
 const fetchOrphans = async () => {
   try {
-    const res = await fetch("http://localhost:8080/api/orphans");
+    const res = await fetch(apiUrl("/api/orphans"));
     if (res.ok) orphanBlocks.value = (await res.json()) || [];
   } catch (error) {
     console.error("孤塊連線失敗！", error);
@@ -404,7 +406,7 @@ const fetchOrphans = async () => {
 
 const fetchMempool = async () => {
   try {
-    const res = await fetch("http://localhost:8080/api/mempool");
+    const res = await fetch(apiUrl("/api/mempool"));
     if (res.ok) {
       const data = await res.json();
       if (Array.isArray(data)) {
@@ -422,7 +424,7 @@ const fetchMempool = async () => {
 
 const fetchRecommendedFee = async () => {
   try {
-    const res = await fetch("http://localhost:8080/api/estimatefee");
+    const res = await fetch(apiUrl("/api/estimatefee"));
     const data = await res.json();
     if (data.fee !== undefined) txForm.value.fee = data.fee;
   } catch (error) {
@@ -437,7 +439,7 @@ const openTransactionDetails = async (txid) => {
   txData.value = null;
 
   try {
-    const res = await fetch(`http://localhost:8080/api/tx/${txid}`);
+    const res = await fetch(apiUrl(`/api/tx/${txid}`));
     if (res.ok) {
       txData.value = await res.json();
     } else {
@@ -462,18 +464,18 @@ const handleSearch = async () => {
 
   try {
     if (/^\d+$/.test(query)) {
-      const res = await fetch(`http://localhost:8080/api/block/${query}`);
+      const res = await fetch(apiUrl(`/api/block/${query}`));
       if (res.ok) {
         blockData.value = await res.json();
       } else {
         alert("Block not found.");
       }
     } else if (/^[0-9a-fA-F]{64}$/.test(query)) {
-      const txRes = await fetch(`http://localhost:8080/api/tx/${query}`);
+      const txRes = await fetch(apiUrl(`/api/tx/${query}`));
       if (txRes.ok) {
         txData.value = await txRes.json();
       } else {
-        const blockRes = await fetch(`http://localhost:8080/api/block/${query}`);
+        const blockRes = await fetch(apiUrl(`/api/block/${query}`));
         if (blockRes.ok) {
           blockData.value = await blockRes.json();
         } else {
@@ -481,7 +483,7 @@ const handleSearch = async () => {
         }
       }
     } else {
-      const res = await fetch(`http://localhost:8080/api/address/${query}`);
+      const res = await fetch(apiUrl(`/api/address/${query}`));
       if (res.ok) {
         walletData.value = await res.json();
       } else {
@@ -497,7 +499,7 @@ const handleSearch = async () => {
   try {
     if (/^\d+$/.test(query)) {
       // 🕵️ 呼叫我們剛剛在 Go 裡寫好的 /api/tx/ 端點！
-      const res = await fetch(`http://localhost:8080/api/tx/${query}`);
+      const res = await fetch(apiUrl(`/api/tx/${query}`));
       if (res.ok) {
         txData.value = await res.json();
       } else {
@@ -505,7 +507,7 @@ const handleSearch = async () => {
       }
     } else {
       // 查地址維持不變
-      const res = await fetch(`http://localhost:8080/api/address/${query}`);
+      const res = await fetch(apiUrl(`/api/address/${query}`));
       if (res.ok) {
         walletData.value = await res.json();
       } else {
@@ -534,7 +536,7 @@ const handleSendTx = async () => {
   }
 
   try {
-    const res = await fetch("http://localhost:8080/api/transaction", {
+    const res = await fetch(apiUrl("/api/transaction"), {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({

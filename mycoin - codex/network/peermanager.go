@@ -14,6 +14,7 @@ import (
 var DefaultSeeds = []string{
 	// "192.168.100.169:9001",
 	// "192.168.100.215:9001",
+	"149.118.150.229:9001",
 }
 
 type PeerManager struct {
