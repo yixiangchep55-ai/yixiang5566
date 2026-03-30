@@ -1,0 +1,13 @@
+{
+  "$schema": "https://wails.io/schemas/config.v2.json",
+  "name": "mycoin-dashboard-wails",
+  "outputfilename": "mycoin-dashboard-wails",
+  "frontend:install": "npm install",
+  "frontend:build": "npm run build",
+  "frontend:dev:watcher": "npm run dev",
+  "frontend:dev:serverUrl": "auto",
+  "author": {
+    "name": "yixia@DESKTOP-I5GGJJC",
+    "email": "yixiangchep55@gmail.com"
+  }
+}
