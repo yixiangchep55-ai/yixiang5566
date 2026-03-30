@@ -8,6 +8,7 @@ import (
 	"log"
 	"math/big"
 	"mycoin/blockchain"
+	"mycoin/indexer"
 	"mycoin/node"
 	"os"
 	"strings"
@@ -767,6 +768,18 @@ func (h *Handler) finishSyncing() bool {
 		h.Node.SyncState = node.SyncBodies
 		h.Node.Unlock()
 		return false
+	}
+
+	chainSnapshot := append([]*blockchain.Block(nil), h.Node.Chain...)
+	if required, reason := indexer.DetectBackfillNeed(chainSnapshot); required {
+		fmt.Printf("[Indexer] Sync finalization requires backfill: %s\n", reason)
+		genesisHash := ""
+		if len(chainSnapshot) > 0 && chainSnapshot[0] != nil {
+			genesisHash = hex.EncodeToString(chainSnapshot[0].Hash)
+		}
+		if err := indexer.BackfillMainChain(genesisHash, chainSnapshot); err != nil {
+			fmt.Printf("[Indexer] Sync finalization backfill failed: %v\n", err)
+		}
 	}
 
 	h.Node.Lock()
