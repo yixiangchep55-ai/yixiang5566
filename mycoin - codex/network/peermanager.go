@@ -1,4 +1,4 @@
-package network
+﻿package network
 
 import (
 	"context"
@@ -101,10 +101,22 @@ func (pm *PeerManager) isLocalHost(host string) bool {
 	return false
 }
 
+func (pm *PeerManager) localAdvertiseAddr() string {
+	if pm == nil || pm.Network == nil || pm.Network.Handler == nil {
+		return ""
+	}
+
+	return normalizePeerAddr(pm.Network.Handler.LocalVersion.AdvertiseAddr)
+}
+
 func (pm *PeerManager) isSelfDialAddress(addr string) bool {
 	addr = normalizePeerAddr(addr)
 	if addr == "" {
 		return false
+	}
+
+	if advertised := pm.localAdvertiseAddr(); advertised != "" && addr == advertised {
+		return true
 	}
 
 	host, port, err := net.SplitHostPort(addr)
@@ -473,6 +485,11 @@ func (pm *PeerManager) SavePeer(p *Peer) {
 		}
 	}
 
+	if pm.isSelfDialAddress(savedAddr) {
+		pm.Network.Node.DB.Delete("peerstore", savedAddr)
+		return
+	}
+
 	info := PeerInfo{
 		Addr:     savedAddr,
 		LastSeen: time.Now().Unix(),
@@ -487,10 +504,14 @@ func (pm *PeerManager) SavePeer(p *Peer) {
 func (pm *PeerManager) LoadPeers() []string {
 	var peers []string
 	seen := make(map[string]struct{})
+	stale := make([]string, 0)
 
 	pm.Network.Node.DB.Iterate("peerstore", func(k, v []byte) {
 		addr := normalizePeerAddr(string(k))
 		if addr == "" || pm.isSelfDialAddress(addr) {
+			if addr != "" {
+				stale = append(stale, addr)
+			}
 			return
 		}
 		if _, exists := seen[addr]; exists {
@@ -499,6 +520,10 @@ func (pm *PeerManager) LoadPeers() []string {
 		seen[addr] = struct{}{}
 		peers = append(peers, addr)
 	})
+
+	for _, addr := range stale {
+		pm.Network.Node.DB.Delete("peerstore", addr)
+	}
 
 	return peers
 }
@@ -546,3 +571,4 @@ func (pm *PeerManager) QueryDNSSeeds() {
 		}
 	}
 }
+
