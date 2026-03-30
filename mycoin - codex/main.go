@@ -7,6 +7,7 @@ import (
 	"net"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"mycoin/api"
@@ -135,12 +136,35 @@ func main() {
 	fmt.Println("Waiting 5 seconds for P2P network to establish peers...")
 	time.Sleep(5 * time.Second)
 
-	go nd.Mine()
-	fmt.Println("Miner started (Node-controlled) with address:", nd.MiningAddress)
+	if shouldAutostartMiner() {
+		go nd.Mine()
+		fmt.Println("Miner started (Node-controlled) with address:", nd.MiningAddress)
+	} else {
+		nd.SetMiningEnabled(false)
+		fmt.Println("Miner autostart disabled by environment.")
+	}
 
 	go api.StartServer("8080")
 
 	select {}
+}
+
+func shouldAutostartMiner() bool {
+	if raw, ok := os.LookupEnv("MYCOIN_AUTOSTART_MINER"); ok {
+		switch strings.ToLower(strings.TrimSpace(raw)) {
+		case "0", "false", "no", "off":
+			return false
+		}
+	}
+
+	if raw, ok := os.LookupEnv("MYCOIN_DISABLE_MINER"); ok {
+		switch strings.ToLower(strings.TrimSpace(raw)) {
+		case "1", "true", "yes", "on":
+			return false
+		}
+	}
+
+	return true
 }
 
 func resolveAdvertiseAddr() string {
