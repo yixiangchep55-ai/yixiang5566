@@ -1453,7 +1453,7 @@ func (n *Node) HasMissingBodiesLocked() bool {
 }
 
 func (n *Node) hasMissingBodiesLocked() bool {
-	if n.Best == nil {
+	if n.strongestKnownTipLocked() == nil {
 		return false
 	}
 
@@ -1466,8 +1466,40 @@ func (n *Node) MissingBlockBodies(limit int) []*BlockIndex {
 	return n.missingBlockBodiesLocked(limit)
 }
 
+func (n *Node) strongestKnownTipLocked() *BlockIndex {
+	var best *BlockIndex
+	for _, bi := range n.Blocks {
+		if bi == nil {
+			continue
+		}
+
+		candidateWork := bi.CumWorkInt
+		if candidateWork == nil {
+			candidateWork = big.NewInt(0)
+		}
+
+		if best == nil {
+			best = bi
+			continue
+		}
+
+		bestWork := best.CumWorkInt
+		if bestWork == nil {
+			bestWork = big.NewInt(0)
+		}
+
+		cmp := candidateWork.Cmp(bestWork)
+		if cmp > 0 || (cmp == 0 && (bi.Height > best.Height || (bi.Height == best.Height && bi.Hash > best.Hash))) {
+			best = bi
+		}
+	}
+
+	return best
+}
+
 func (n *Node) missingBlockBodiesLocked(limit int) []*BlockIndex {
-	if n.Best == nil {
+	tip := n.strongestKnownTipLocked()
+	if tip == nil {
 		return nil
 	}
 	if limit <= 0 {
@@ -1480,7 +1512,7 @@ func (n *Node) missingBlockBodiesLocked(limit int) []*BlockIndex {
 	}
 
 	missing := make([]*BlockIndex, 0, limit)
-	for cur := n.Best; cur != nil && cur.Height > 0; cur = cur.Parent {
+	for cur := tip; cur != nil && cur.Height > 0; cur = cur.Parent {
 		if cur.Block != nil && len(n.Chain) > 0 && cur.Height >= chainStartHeight {
 			idx := int(cur.Height - chainStartHeight)
 			if idx >= 0 && idx < len(n.Chain) {
