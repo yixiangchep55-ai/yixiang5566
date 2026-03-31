@@ -59,8 +59,7 @@ func newNodeMempool(mode string, db *database.BoltDB) *mempool.Mempool {
 }
 
 // --------------------
-// Node = 验证 + 链管理
-// --------------------
+// Node = 楠岃瘉 + 閾剧鐞?// --------------------
 
 type Node struct {
 	Chain          []*blockchain.Block
@@ -111,15 +110,13 @@ func (n *Node) HasBlock(hash []byte) bool {
 	n.mu.Lock()
 	defer n.mu.Unlock()
 
-	// 1. 检查索引是否存在
-	bi, exists := n.Blocks[key]
+	// 1. 妫€鏌ョ储寮曟槸鍚﹀瓨鍦?	bi, exists := n.Blocks[key]
 	if exists {
-		// 2. 如果索引存在，且 Block 指针不为空，说明拥有完整区块
+		// 2. 濡傛灉绱㈠紩瀛樺湪锛屼笖 Block 鎸囬拡涓嶄负绌猴紝璇存槑鎷ユ湁瀹屾暣鍖哄潡
 		return bi.Block != nil
 	}
 
-	// 3. 检查是否在孤块池
-	if list, ok := n.Orphans[key]; ok && len(list) > 0 {
+	// 3. 妫€鏌ユ槸鍚﹀湪瀛ゅ潡姹?	if list, ok := n.Orphans[key]; ok && len(list) > 0 {
 		return true
 	}
 
@@ -150,25 +147,24 @@ func (n *Node) IsPrunedMode() bool {
 	return NormalizeMode(n.Mode) == ModePruned
 }
 
-// 辅助函数也需要改
+// 杈呭姪鍑芥暟涔熼渶瑕佹敼
 func (n *Node) GetBlockByHash(hashHex string) *blockchain.Block {
 	if bi, ok := n.Blocks[hashHex]; ok {
-		return bi.Block // 直接返回索引里的 Block 指针
+		return bi.Block // 鐩存帴杩斿洖绱㈠紩閲岀殑 Block 鎸囬拡
 	}
 	return nil
 }
 
 func computeWork(target *big.Int) *big.Int {
 	if target == nil || target.Sign() <= 0 {
-		return big.NewInt(1) // 避免除以 0 或負數
-	}
+		return big.NewInt(1) // 閬垮厤闄や互 0 鎴栬矤鏁?	}
 
 	max := new(big.Int).Lsh(big.NewInt(1), 256)
 	denom := new(big.Int).Add(target, big.NewInt(1))
 	work := new(big.Int).Div(max, denom)
 
-	// 🔥 保險：如果算出來是 0（難度極低時），強制給 1
-	// 這樣累積工作量才會增加，Best Chain 才會切換
+	// 馃敟 淇濋毆锛氬鏋滅畻鍑轰締鏄?0锛堥洠搴︽サ浣庢檪锛夛紝寮峰埗绲?1
+	// 閫欐ǎ绱宸ヤ綔閲忔墠鏈冨鍔狅紝Best Chain 鎵嶆渻鍒囨彌
 	if work.Sign() == 0 {
 		return big.NewInt(1)
 	}
@@ -180,8 +176,7 @@ func utxoKey(txid string, index int) string {
 }
 
 // --------------------
-// 创建新节点（含创世块）
-// --------------------
+// 鍒涘缓鏂拌妭鐐癸紙鍚垱涓栧潡锛?// --------------------
 func NewNode(mode string, datadir string) *Node {
 	os.MkdirAll(datadir, 0755)
 	dbPath := filepath.Join(datadir, "chain.db")
@@ -194,10 +189,9 @@ func NewNode(mode string, datadir string) *Node {
 	)
 
 	// ==========================================
-	// 🌟 探長加碼：在建立 Node 之前，先印製專屬身分證！
+	// 馃専 鎺㈤暦鍔犵⒓锛氬湪寤虹珛 Node 涔嬪墠锛屽厛鍗拌＝灏堝爆韬垎璀夛紒
 	// ==========================================
-	myNodeID := rand.Uint64() // 抽出一張隨機的身分證號碼
-	// ==========================================
+	myNodeID := rand.Uint64() // 鎶藉嚭涓€寮甸毃姗熺殑韬垎璀夎櫉纰?	// ==========================================
 
 	n := &Node{
 		Mode:    NormalizeMode(mode),
@@ -206,24 +200,22 @@ func NewNode(mode string, datadir string) *Node {
 		UTXO:    blockchain.NewUTXOSet(db),
 		Target:  target,
 		Reward:  500,
-		Blocks:  make(map[string]*BlockIndex), // ✓ 修正
-		//	BlockIndex: make(map[string]*blockchain.Block), // ✓ 修正
+		Blocks:  make(map[string]*BlockIndex), // 鉁?淇
+		//	BlockIndex: make(map[string]*blockchain.Block), // 鉁?淇
 		Orphans:        make(map[string][]*blockchain.Block),
 		DB:             db,
 		MinerResetChan: make(chan bool, 1),
 		MiningEnabled:  true,
 		// ==========================================
-		// 🚨 探長加碼：給節點戴上「實習生」臂章
-		// 確保它一出生就知道自己該先安靜同步！
+		// 馃毃 鎺㈤暦鍔犵⒓锛氱郸绡€榛炴埓涓娿€屽缈掔敓銆嶈噦绔?		// 纰轰繚瀹冧竴鍑虹敓灏辩煡閬撹嚜宸辫┎鍏堝畨闈滃悓姝ワ紒
 		// ==========================================
-		IsSyncing: true,        // 👈 強制設定為同步中
-		SyncState: SyncHeaders, // 👈 設定初始狀態為「抓取標頭」
-		// ==========================================
+		IsSyncing: true,        // 馃憟 寮峰埗瑷畾鐐哄悓姝ヤ腑
+		SyncState: SyncHeaders, // 馃憟 瑷畾鍒濆鐙€鎱嬬偤銆屾姄鍙栨闋€?		// ==========================================
 		NodeID: myNodeID,
 	}
 
 	// ==========================================================
-	// 🚨 探長關鍵加碼：把創世區塊請進記憶體點名簿！
+	// 馃毃 鎺㈤暦闂滈嵉鍔犵⒓锛氭妸鍓典笘鍗€濉婅珛閫茶鎲堕珨榛炲悕绨匡紒
 	// ==========================================================
 	genesis := blockchain.NewGenesisBlock(target)
 	gHash := hex.EncodeToString(genesis.Hash)
@@ -234,8 +226,7 @@ func NewNode(mode string, datadir string) *Node {
 		Block:      genesis,
 		CumWorkInt: big.NewInt(0),
 	}
-	// 順便把 n.Best 設為創世，這樣同步才有一個起點
-	n.Best = n.Blocks[gHash]
+	// 闋嗕究鎶?n.Best 瑷偤鍓典笘锛岄€欐ǎ鍚屾鎵嶆湁涓€鍊嬭捣榛?	n.Best = n.Blocks[gHash]
 	// ==========================================================
 
 	go n.maintainMempool()
@@ -244,11 +235,11 @@ func NewNode(mode string, datadir string) *Node {
 }
 
 // -----------------------------------------------------------------------------
-// 🔥 方案 A 核心：Node 主控挖礦邏輯 (請貼在 node/node.go 最後面)
+// 馃敟 鏂规 A 鏍稿績锛歂ode 涓绘帶鎸栫う閭忚集 (璜嬭布鍦?node/node.go 鏈€寰岄潰)
 // -----------------------------------------------------------------------------
 
 func (n *Node) Mine() {
-	fmt.Println("[Node] miner controller started...")
+	fmt.Println("馃懛 [Node] 绀﹀伐涓绘帶绋嬪紡宸插暉鍕?..")
 
 	if n.Miner == nil {
 		n.Miner = miner.NewMiner(n.MiningAddress, n)
@@ -260,131 +251,129 @@ func (n *Node) Mine() {
 			continue
 		}
 
-		// 1. 同步檢查
+		// 1. 鍚屾妾㈡煡
 		if !n.IsSynced() {
 			time.Sleep(2 * time.Second)
 			continue
 		}
 
-		// 2. 挖礦
+		// 2. 鎸栫う
 		newBlock := n.Miner.Mine(true)
 
-		// 3. 處理結果
+		// 3. 铏曠悊绲愭灉
 		if newBlock != nil {
-			fmt.Printf("[Node] mined block successfully. Height: %d, Hash: %x\n", newBlock.Height, newBlock.Hash)
+            fmt.Printf("[Node] mined block candidate: height %d, hash %x\n", newBlock.Height, newBlock.Hash)
 
 			if n.AddBlock(newBlock) {
 				n.BroadcastNewBlock(newBlock)
 			} else {
-				fmt.Println("[Node] severe warning: a locally mined block failed validation")
+                fmt.Println("[Node] mined block was rejected by AddBlock; removing included transactions from the mempool")
 				for _, tx := range newBlock.Transactions {
-					// Coinbase 交易本來就不在 Mempool 裡，踢了也沒影響
+					// Coinbase 浜ゆ槗鏈締灏变笉鍦?Mempool 瑁★紝韪簡涔熸矑褰遍熆
 					n.RemoveFromMempool(tx.ID)
 				}
 			}
 
-			// 🔥🔥🔥 關鍵修正：挖到塊之後，強制休息 2 秒！ 🔥🔥🔥
-			// 這能確保網路有足夠時間傳播，也解決了 CPU 佔用問題
-			fmt.Println("[Node] mining cooldown (2s)...")
+			// 馃敟馃敟馃敟 闂滈嵉淇锛氭寲鍒板涔嬪緦锛屽挤鍒朵紤鎭?2 绉掞紒 馃敟馃敟馃敟
+			// 閫欒兘纰轰繚缍茶矾鏈夎冻澶犳檪闁撳偝鎾紝涔熻В姹轰簡 CPU 浣旂敤鍟忛
+            fmt.Println("[Node] mining cooldown (5s)...")
 			time.Sleep(5 * time.Second)
 		} else {
-			// 被中斷 (收到別人的塊)
-			fmt.Println("[Node] chain update detected; preparing to reset miner state...")
+			// 琚腑鏂?(鏀跺埌鍒ヤ汉鐨勫)
+			fmt.Println("馃攧 [Node] 鍋垫脯鍒伴張鏇存柊锛屾簴鍌欓噸缃う宸ョ媭鎱?..")
 
 			// ==========================================================
-			// 🌟 探長終極排水術：把 MinerResetChan 抽乾！
-			// ==========================================================
-			// 既然你上面有 GetResetChan() 做保護，我們直接呼叫它
+			// 馃専 鎺㈤暦绲傛サ鎺掓按琛擄細鎶?MinerResetChan 鎶戒咕锛?			// ==========================================================
+			// 鏃㈢劧浣犱笂闈㈡湁 GetResetChan() 鍋氫繚璀凤紝鎴戝€戠洿鎺ュ懠鍙畠
 			ch := n.GetResetChan()
 
-			// 使用非阻塞迴圈抽乾頻道內積壓的所有 true/false 信號
+			// 浣跨敤闈為樆濉炶看鍦堟娊涔鹃牷閬撳収绌嶅鐨勬墍鏈?true/false 淇¤櫉
 			drainedCount := 0
 			for {
 				select {
 				case <-ch:
 					drainedCount++
-					// 繼續抽下一個
-				default:
-					// 信箱終於抽乾了！
+					// 绻肩簩鎶戒笅涓€鍊?				default:
+					// 淇＄绲傛柤鎶戒咕浜嗭紒
 					goto Drained
 				}
 			}
 		Drained:
-			// 如果你好奇抽掉了幾個，可以取消下面這行的註解來 debug
-			// fmt.Printf("🧹 已清空 %d 個積壓的中斷信號\n", drainedCount)
+			// 濡傛灉浣犲ソ濂囨娊鎺変簡骞惧€嬶紝鍙互鍙栨秷涓嬮潰閫欒鐨勮ɑ瑙ｄ締 debug
+			// fmt.Printf("馃Ч 宸叉竻绌?%d 鍊嬬澹撶殑涓柗淇¤櫉\n", drainedCount)
 
-			// 🛡️ 休息 0.5 秒，讓 Node 有時間把新區塊寫進資料庫
+			// 馃洝锔?浼戞伅 0.5 绉掞紝璁?Node 鏈夋檪闁撴妸鏂板崁濉婂閫茶硣鏂欏韩
 			time.Sleep(500 * time.Millisecond)
 		}
 	}
 }
 
 // --------------------
-// 添加交易到 Mempool
+// 娣诲姞浜ゆ槗鍒?Mempool
 // --------------------
 // --------------------
-// 添加交易到 Mempool (終極防護版)
+// 娣诲姞浜ゆ槗鍒?Mempool (绲傛サ闃茶鐗?
 // --------------------
 // --------------------
-// 添加交易到 Mempool (最終完全體：支援 RBF)
+// 娣诲姞浜ゆ槗鍒?Mempool (鏈€绲傚畬鍏ㄩ珨锛氭敮鎻?RBF)
 // --------------------
 func (n *Node) AddTx(tx blockchain.Transaction, fromNodeID uint64) bool {
 	if debugMempoolFlow {
-		fmt.Println("👉 [X-Ray] 準備鎖定 n.mu 大門...")
+		fmt.Println("馃憠 [X-Ray] 婧栧倷閹栧畾 n.mu 澶ч杸...")
 	}
 	n.mu.Lock()
 	defer n.mu.Unlock()
 	if debugMempoolFlow {
-		fmt.Println("👉 [X-Ray] 成功鎖定 n.mu，開始執行保全檢查...")
+		fmt.Println("馃憠 [X-Ray] 鎴愬姛閹栧畾 n.mu锛岄枊濮嬪煼琛屼繚鍏ㄦ鏌?..")
 	}
 
 	// ==========================================
-	// 🕵️ 第一關：門口保全 (手續費檢查)
+	// 馃暤锔?绗竴闂滐細闁€鍙ｄ繚鍏?(鎵嬬簩璨绘鏌?
 	// ==========================================
-	// 注意：這裡直接從當前 UTXO Set 查手續費
+	// 娉ㄦ剰锛氶€欒！鐩存帴寰炵暥鍓?UTXO Set 鏌ユ墜绾岃不
 	fee := tx.Fee(n.UTXO, n.Mempool.Txs)
-	const MinRelayFee = 1 // 只有手續費 >= 1 元才准進來
+	const MinRelayFee = 1 // 鍙湁鎵嬬簩璨?>= 1 鍏冩墠鍑嗛€蹭締
 
 	if fee < MinRelayFee {
-		fmt.Printf("🚫 [Security] 交易 %s 手續費太低 (%d < %d)，直接在門外踢掉！\n", tx.ID[:8], fee, MinRelayFee)
+		fmt.Printf("馃毇 [Security] 浜ゆ槗 %s 鎵嬬簩璨诲お浣?(%d < %d)锛岀洿鎺ュ湪闁€澶栬涪鎺夛紒\n", tx.ID[:8], fee, MinRelayFee)
 		return false
 	}
 
 	if err := VerifyTx(tx, n.UTXO, n.Mempool.Txs); err != nil {
-		fmt.Printf("❌ 交易驗證失敗被拒絕 (%s): %v\n", tx.ID, err)
+		fmt.Printf("鉂?浜ゆ槗椹楄瓑澶辨晽琚嫆绲?(%s): %v\n", tx.ID, err)
 		return false
 	}
 
 	if debugMempoolFlow {
-		fmt.Println("[X-Ray] VerifyTx passed; checking Mempool.Has...")
+		fmt.Println("馃憠 [X-Ray] VerifyTx 閫氶亷锛岄枊濮嬪煼琛?Mempool.Has...")
 	}
 	if n.Mempool.Has(tx.ID) {
 		return false
 	}
 
 	if debugMempoolFlow {
-		fmt.Println("[X-Ray] Mempool.Has passed; checking Mempool.HasDoubleSpend...")
+		fmt.Println("馃憠 [X-Ray] Mempool.Has 閫氶亷锛岄枊濮嬪煼琛?Mempool.HasDoubleSpend...")
 	}
 	if n.Mempool.HasDoubleSpend(&tx) {
-		fmt.Printf("[Mempool] rejecting tx %s because it conflicts with an existing mempool spend\n", tx.ID)
+        fmt.Printf("[Mempool] rejecting tx %s because it conflicts with an existing mempool spend\n", tx.ID)
 		return false
 	}
 
 	if debugMempoolFlow {
-		fmt.Println("[X-Ray] Mempool.HasDoubleSpend passed; calling AddTxRBF...")
+        fmt.Println("[X-Ray] Mempool.HasDoubleSpend passed; calling AddTxRBF...")
 	}
 	ok := n.Mempool.AddTxRBF(tx.ID, tx.Serialize(), n.UTXO, fromNodeID)
 
 	if debugMempoolFlow {
-		fmt.Println("[X-Ray] AddTxRBF returned")
+        fmt.Println("[X-Ray] AddTxRBF returned")
 	}
 	if !ok {
-		fmt.Println("[Mempool] transaction was rejected by AddTxRBF (possibly low fee or failed RBF)")
+        fmt.Println("[Mempool] transaction was rejected by AddTxRBF")
 		return false
 	}
 
 	if debugMempoolFlow {
-		fmt.Printf("[X-Ray] tx %s entered the mempool successfully and is waiting to be mined\n", tx.ID)
+		fmt.Printf("馃摜 鉁?[X-Ray] 浜ゆ槗 %s 鎴愬姛閫插叆 Mempool锛岀瓑寰呮墦鍖匼n", tx.ID)
 	}
 
 	return true
@@ -392,13 +381,13 @@ func (n *Node) AddTx(tx blockchain.Transaction, fromNodeID uint64) bool {
 }
 
 // --------------------
-// 区块追加（主链）
+// 鍖哄潡杩藉姞锛堜富閾撅級
 // --------------------
 func (n *Node) appendBlock(block *blockchain.Block) {
-	// 1️⃣ 加入主链
+	// 1锔忊儯 鍔犲叆涓婚摼
 	n.Chain = append(n.Chain, block)
 
-	// 2️⃣ 更新 UTXO（只做共识状态）
+	// 2锔忊儯 鏇存柊 UTXO锛堝彧鍋氬叡璇嗙姸鎬侊級
 	for _, tx := range block.Transactions {
 		if !tx.IsCoinbase {
 			n.UTXO.Spend(tx)
@@ -406,22 +395,20 @@ func (n *Node) appendBlock(block *blockchain.Block) {
 		n.UTXO.Add(tx)
 	}
 
-	// 3️⃣ 🔥 CPFP：mempool rebuild（关键）
+	// 3锔忊儯 馃敟 CPFP锛歮empool rebuild锛堝叧閿級
 	oldTxs := n.Mempool.Txs
-	oldSources := n.Mempool.Sources // 🌟 探長關鍵修正：把來源身分證名冊也備份起來！
-
+	oldSources := n.Mempool.Sources // 馃専 鎺㈤暦闂滈嵉淇锛氭妸渚嗘簮韬垎璀夊悕鍐婁篃鍌欎唤璧蜂締锛?
 	n.Mempool.Reset()
 
 	for txid, txBytes := range oldTxs {
-		// 🕵️ 查出這筆交易當初是誰送來的 (如果找不到，預設當作是自己 n.NodeID)
+		// 馃暤锔?鏌ュ嚭閫欑瓎浜ゆ槗鐣跺垵鏄閫佷締鐨?(濡傛灉鎵句笉鍒帮紝闋愯ō鐣朵綔鏄嚜宸?n.NodeID)
 		fromID := n.NodeID
 		if id, exists := oldSources[txid]; exists {
 			fromID = id
 		}
 
-		// 🚀 補上第 4 個參數 fromID！
-		if ok := n.Mempool.AddTxRBF(txid, txBytes, n.UTXO, fromID); !ok {
-			log.Println("🧹 mempool drop after block:", txid)
+		// 馃殌 瑁滀笂绗?4 鍊嬪弮鏁?fromID锛?		if ok := n.Mempool.AddTxRBF(txid, txBytes, n.UTXO, fromID); !ok {
+			log.Println("馃Ч mempool drop after block:", txid)
 		}
 	}
 
@@ -432,47 +419,41 @@ func (n *Node) appendBlock(block *blockchain.Block) {
 }
 
 // --------------------
-// 添加新区块
-// --------------------
+// 娣诲姞鏂板尯鍧?// --------------------
 func (n *Node) AddBlock(block *blockchain.Block) bool {
 	n.mu.Lock()
-	// 🔒 我們依然手動管理鎖，不使用 defer，因為我們要精確控制 Unlock 時機
+	// 馃敀 鎴戝€戜緷鐒舵墜鍕曠鐞嗛帠锛屼笉浣跨敤 defer锛屽洜鐐烘垜鍊戣绮剧⒑鎺у埗 Unlock 鏅傛
 
 	hashHex := hex.EncodeToString(block.Hash)
 	prevHex := hex.EncodeToString(block.PrevHash)
 
-	// 1. 重複檢查
+	// 1. 閲嶈妾㈡煡
 	if bi, exists := n.Blocks[hashHex]; exists {
 		if bi.Block != nil {
-			n.mu.Unlock() // 🔓 已經有了，安全解鎖
-			return true
+			n.mu.Unlock() // 馃敁 宸茬稉鏈変簡锛屽畨鍏ㄨВ閹?			return true
 		}
-		// 如果只有 Header 沒 Body，就繼續跑下去補齊它
+		// 濡傛灉鍙湁 Header 娌?Body锛屽氨绻肩簩璺戜笅鍘昏榻婂畠
 	}
 
-	// 2. 孤兒檢查
+	// 2. 瀛ゅ厭妾㈡煡
 	parentIndex, exists := n.Blocks[prevHex]
 	if !exists || parentIndex.Block == nil {
-		log.Printf("⚠️ 發現孤塊: %d (缺少父塊 %s)\n", block.Height, prevHex[:8])
+		log.Printf("鈿狅笍 鐧肩従瀛ゅ: %d (缂哄皯鐖跺 %s)\n", block.Height, prevHex[:8])
 		n.addOrphanLocked(block)
-		n.mu.Unlock() // 🔓 存入孤兒院，安全解鎖
+		n.mu.Unlock() // 馃敁 瀛樺叆瀛ゅ厭闄紝瀹夊叏瑙ｉ帠
 		return false
 	}
 
-	// 3. 核心連接 (此時仍持有鎖，保護 n.Best 和 n.UTXO)
+	// 3. 鏍稿績閫ｆ帴 (姝ゆ檪浠嶆寔鏈夐帠锛屼繚璀?n.Best 鍜?n.UTXO)
 	success := n.connectBlock(block, parentIndex)
 
 	if !success {
-		n.mu.Unlock() // 🔓 失敗，安全解鎖
-		return false
+		n.mu.Unlock() // 馃敁 澶辨晽锛屽畨鍏ㄨВ閹?		return false
 	}
 
 	// ==========================================
-	// 🚀 關鍵修正點：在解鎖前，確保帳本狀態已經同步
-	// ==========================================
-	// 雖然 connectBlock 裡可能有 Flush，但這裡做最後確認，確保 Kali 重啟必對。
-	// n.UTXO.FlushToDB() // 如果 connectBlock 已經做了，這裡可省略
-
+	// 馃殌 闂滈嵉淇榛烇細鍦ㄨВ閹栧墠锛岀⒑淇濆赋鏈媭鎱嬪凡缍撳悓姝?	// ==========================================
+	// 闆栫劧 connectBlock 瑁″彲鑳芥湁 Flush锛屼絾閫欒！鍋氭渶寰岀⒑瑾嶏紝纰轰繚 Kali 閲嶅暉蹇呭皪銆?	// n.UTXO.FlushToDB() // 濡傛灉 connectBlock 宸茬稉鍋氫簡锛岄€欒！鍙渷鐣?
 	isMain := false
 	curr := n.Best
 	for curr != nil {
@@ -483,14 +464,13 @@ func (n *Node) AddBlock(block *blockchain.Block) bool {
 		curr = curr.Parent
 	}
 
-	// 4. 釋放 Node 鎖
-	n.mu.Unlock()
+	// 4. 閲嬫斁 Node 閹?	n.mu.Unlock()
 
-	// 5. 異步/解鎖後的後續處理
-	// 清理 Mempool (此時新區塊已接上，Mempool 內的交易已失效)
+	// 5. 鐣版/瑙ｉ帠寰岀殑寰岀簩铏曠悊
+	// 娓呯悊 Mempool (姝ゆ檪鏂板崁濉婂凡鎺ヤ笂锛孧empool 鍏х殑浜ゆ槗宸插け鏁?
 	n.removeConfirmedTxs(block)
 
-	// 處理孤兒塊：這會啟動遞迴，因為鎖已放開，不會發生死鎖
+	// 铏曠悊瀛ゅ厭濉婏細閫欐渻鍟熷嫊閬炶看锛屽洜鐐洪帠宸叉斁闁嬶紝涓嶆渻鐧肩敓姝婚帠
 	go n.attachOrphans(hashHex)
 
 	go indexer.IndexBlock(block, block.Height, isMain)
@@ -503,48 +483,44 @@ func (n *Node) AddBlock(block *blockchain.Block) bool {
 }
 
 // --------------------
-// 重建主链 (完美退回交易版)
+// 閲嶅缓涓婚摼 (瀹岀編閫€鍥炰氦鏄撶増)
 // --------------------
 func (n *Node) rebuildChain(oldChain, newChain []*BlockIndex, newTip *BlockIndex) {
-	fmt.Printf("🔄 [Reorg] 啟動鏈重組：舊鏈長度 %d -> 新鏈長度 %d\n", len(oldChain), len(newChain))
+	fmt.Printf("馃攧 [Reorg] 鍟熷嫊閺堥噸绲勶細鑸婇張闀峰害 %d -> 鏂伴張闀峰害 %d\n", len(oldChain), len(newChain))
 
 	// ============================================================
-	// 🛠️ 核心修正：同步更新 UTXO 帳本 (必須在更新 n.Chain 之前處理)
+	// 馃洜锔?鏍稿績淇锛氬悓姝ユ洿鏂?UTXO 甯虫湰 (蹇呴爤鍦ㄦ洿鏂?n.Chain 涔嬪墠铏曠悊)
 	// ============================================================
 
-	// A. 撤銷舊鏈 (Rollback) - 必須由新往舊（Tip 往回走）撤銷
-	for i := len(oldChain) - 1; i >= 0; i-- {
+	// A. 鎾ら姺鑸婇張 (Rollback) - 蹇呴爤鐢辨柊寰€鑸婏紙Tip 寰€鍥炶蛋锛夋挙閵?	for i := len(oldChain) - 1; i >= 0; i-- {
 		oldBI := oldChain[i]
 		if oldBI != nil && oldBI.Block != nil {
-			fmt.Printf("⏪ 正在撤銷舊鏈區塊: %d (Hash: %s)\n", oldBI.Height, oldBI.Hash[:8])
+			fmt.Printf("鈴?姝ｅ湪鎾ら姺鑸婇張鍗€濉? %d (Hash: %s)\n", oldBI.Height, oldBI.Hash[:8])
 			for _, tx := range oldBI.Block.Transactions {
 				n.UTXO.Revert(tx)
 			}
-			// 🚀 【手術刀 1】：同步抹除 PostgreSQL 裡的幽靈數據
+			// 馃殌 銆愭墜琛撳垁 1銆戯細鍚屾鎶归櫎 PostgreSQL 瑁＄殑骞介潏鏁告摎
 			indexer.UnindexBlock(oldBI.Hash)
 		}
 	}
 
-	// B. 執行新鏈 (Apply) - 必須由舊往新（高度從小到大）執行
-	for _, newBI := range newChain {
+	// B. 鍩疯鏂伴張 (Apply) - 蹇呴爤鐢辫垔寰€鏂帮紙楂樺害寰炲皬鍒板ぇ锛夊煼琛?	for _, newBI := range newChain {
 		if newBI != nil && newBI.Block != nil {
-			fmt.Printf("⏩ 正在執行新鏈區塊: %d (Hash: %s)\n", newBI.Height, newBI.Hash[:8])
+			fmt.Printf("鈴?姝ｅ湪鍩疯鏂伴張鍗€濉? %d (Hash: %s)\n", newBI.Height, newBI.Hash[:8])
 			for _, tx := range newBI.Block.Transactions {
 				if !tx.IsCoinbase {
 					n.UTXO.Spend(tx)
 				}
 				n.UTXO.Add(tx)
 			}
-			// 🚀 【手術刀 2】：把新鏈的資料重新寫入 PostgreSQL，確保它是最新狀態
-			indexer.IndexBlock(newBI.Block, newBI.Height, true)
+			// 馃殌 銆愭墜琛撳垁 2銆戯細鎶婃柊閺堢殑璩囨枡閲嶆柊瀵叆 PostgreSQL锛岀⒑淇濆畠鏄渶鏂扮媭鎱?			indexer.IndexBlock(newBI.Block, newBI.Height, true)
 		}
 	}
 
-	// 💾 確保更新後的帳本狀態寫入 BoltDB，防止 Kali 重啟後遺失
-	n.UTXO.FlushToDB()
+	// 馃捑 纰轰繚鏇存柊寰岀殑甯虫湰鐙€鎱嬪鍏?BoltDB锛岄槻姝?Kali 閲嶅暉寰岄伜澶?	n.UTXO.FlushToDB()
 
 	// ============================================================
-	// 1️⃣ 構建完整主鏈陣列 (原始邏輯)
+	// 1锔忊儯 妲嬪缓瀹屾暣涓婚張闄ｅ垪 (鍘熷閭忚集)
 	// ============================================================
 	var fullChain []*blockchain.Block
 	cur := newTip
@@ -555,12 +531,12 @@ func (n *Node) rebuildChain(oldChain, newChain []*BlockIndex, newTip *BlockIndex
 		cur = cur.Parent
 	}
 
-	// 更新 Node 核心指標
+	// 鏇存柊 Node 鏍稿績鎸囨
 	n.Chain = fullChain
 	n.Best = newTip
 
 	// ============================================================
-	// 2️⃣ 收集新鏈中【已經確認】的交易 ID (原始邏輯)
+	// 2锔忊儯 鏀堕泦鏂伴張涓€愬凡缍撶⒑瑾嶃€戠殑浜ゆ槗 ID (鍘熷閭忚集)
 	// ============================================================
 	confirmedInNewChain := make(map[string]bool)
 	for _, bi := range newChain {
@@ -572,12 +548,11 @@ func (n *Node) rebuildChain(oldChain, newChain []*BlockIndex, newTip *BlockIndex
 	}
 
 	// ============================================================
-	// 3️⃣ 找出需要退回 Mempool 的交易 (原始邏輯)
+	// 3锔忊儯 鎵惧嚭闇€瑕侀€€鍥?Mempool 鐨勪氦鏄?(鍘熷閭忚集)
 	// ============================================================
 	txsToRestore := make(map[string][]byte)
 
-	// A. 抓出舊鏈中沒有被新鏈打包的交易
-	for _, old := range oldChain {
+	// A. 鎶撳嚭鑸婇張涓矑鏈夎鏂伴張鎵撳寘鐨勪氦鏄?	for _, old := range oldChain {
 		if old != nil && old.Block != nil {
 			for _, tx := range old.Block.Transactions {
 				if !tx.IsCoinbase && !confirmedInNewChain[tx.ID] {
@@ -587,7 +562,7 @@ func (n *Node) rebuildChain(oldChain, newChain []*BlockIndex, newTip *BlockIndex
 		}
 	}
 
-	// B. 保留原本就在 Mempool 裡，且沒被新鏈打包的交易
+	// B. 淇濈暀鍘熸湰灏卞湪 Mempool 瑁★紝涓旀矑琚柊閺堟墦鍖呯殑浜ゆ槗
 	for txid, bytes := range n.Mempool.GetAll() {
 		if !confirmedInNewChain[txid] {
 			txsToRestore[txid] = bytes
@@ -595,17 +570,17 @@ func (n *Node) rebuildChain(oldChain, newChain []*BlockIndex, newTip *BlockIndex
 	}
 
 	// ============================================================
-	// 4️⃣ 安全地重建 Mempool！ (原始邏輯)
+	// 4锔忊儯 瀹夊叏鍦伴噸寤?Mempool锛?(鍘熷閭忚集)
 	// ============================================================
 	n.Mempool.Clear()
 	for txid, bytes := range txsToRestore {
-		// 🚀 關鍵防護：直接塞回底層 Map，不觸發複雜驗證，完美避開死鎖！
+		// 馃殌 闂滈嵉闃茶锛氱洿鎺ュ鍥炲簳灞?Map锛屼笉瑙哥櫦瑜囬洔椹楄瓑锛屽畬缇庨伩闁嬫閹栵紒
 		n.Mempool.Txs[txid] = bytes
 		n.Mempool.TotalBytes += len(bytes)
 	}
 
 	// ============================================================
-	// 5️⃣ 重建交易索引 (TxIndex) (原始邏輯)
+	// 5锔忊儯 閲嶅缓浜ゆ槗绱㈠紩 (TxIndex) (鍘熷閭忚集)
 	// ============================================================
 	for _, old := range oldChain {
 		if old != nil && old.Block != nil {
@@ -618,32 +593,31 @@ func (n *Node) rebuildChain(oldChain, newChain []*BlockIndex, newTip *BlockIndex
 		}
 	}
 
-	log.Printf("🔁 鏈重組完成！高度: %d, 已將 %d 筆交易退回 Mempool。\n", newTip.Height, len(txsToRestore))
+	log.Printf("馃攣 閺堥噸绲勫畬鎴愶紒楂樺害: %d, 宸插皣 %d 绛嗕氦鏄撻€€鍥?Mempool銆俓n", newTip.Height, len(txsToRestore))
 }
 
 // --------------------
-// 查询接口
+// 鏌ヨ鎺ュ彛
 // --------------------
 
-// 放在 mycoin/node/node.go 中
-
+// 鏀惧湪 mycoin/node/node.go 涓?
 func (n *Node) Start() {
 
-	fmt.Println("🚀 Node starting...")
+	fmt.Println("馃殌 Node starting...")
 
 	// -----------------------------------------
-	// 1️⃣ 讀取 best（檢查 DB 是否存在區塊）
+	// 1锔忊儯 璁€鍙?best锛堟鏌?DB 鏄惁瀛樺湪鍗€濉婏級
 	// -----------------------------------------
 	bestHashBytes := n.DB.Get("meta", "best")
 	if bestHashBytes == nil {
-		fmt.Println("📦 No existing blockchain found. Creating genesis...")
+		fmt.Println("馃摝 No existing blockchain found. Creating genesis...")
 		n.initGenesis()
 		return
 	}
 	bestHash := string(bestHashBytes)
 
 	// -----------------------------------------
-	// 2️⃣ 從 index bucket 加載所有 BlockIndex
+	// 2锔忊儯 寰?index bucket 鍔犺級鎵€鏈?BlockIndex
 	// -----------------------------------------
 	indexes := make(map[string]*BlockIndex)
 
@@ -654,8 +628,8 @@ func (n *Node) Start() {
 	})
 
 	if len(indexes) == 0 {
-		fmt.Println("⚠️ 警告：資料庫 meta 有紀錄，但 index 是空的！")
-		fmt.Println("🔄 自動重置創世區塊...")
+		fmt.Println("鈿狅笍 璀﹀憡锛氳硣鏂欏韩 meta 鏈夌磤閷勶紝浣?index 鏄┖鐨勶紒")
+		fmt.Println("馃攧 鑷嫊閲嶇疆鍓典笘鍗€濉?..")
 		n.DB.Delete("meta", "best") // reset broken metadata before recreating genesis
 		n.Blocks = make(map[string]*BlockIndex)
 		n.Chain = nil
@@ -664,18 +638,18 @@ func (n *Node) Start() {
 		return
 	}
 
-	// 補回 big.Int
+	// 瑁滃洖 big.Int
 	for _, bi := range indexes {
 		bi.CumWorkInt = new(big.Int)
 		if bi.CumWork != "" {
-			bi.CumWorkInt.SetString(bi.CumWork, 16) // ✅ 確保這裡是 16
+			bi.CumWorkInt.SetString(bi.CumWork, 16) // 鉁?纰轰繚閫欒！鏄?16
 		} else {
 			bi.CumWorkInt.SetInt64(0)
 		}
 	}
 
 	// -----------------------------------------
-	// 3️⃣ 加載 Block 本體
+	// 3锔忊儯 鍔犺級 Block 鏈珨
 	// -----------------------------------------
 	for _, bi := range indexes {
 		raw := n.DB.Get("blocks", bi.Hash)
@@ -692,7 +666,7 @@ func (n *Node) Start() {
 	}
 
 	// -----------------------------------------
-	// 4️⃣ 重建父子關係
+	// 4锔忊儯 閲嶅缓鐖跺瓙闂滀總
 	// -----------------------------------------
 	for _, bi := range indexes {
 		if bi.PrevHash != "" {
@@ -705,7 +679,7 @@ func (n *Node) Start() {
 	}
 
 	// -----------------------------------------
-	// 5️⃣ 確定 best index (最關鍵的防崩潰點)
+	// 5锔忊儯 纰哄畾 best index (鏈€闂滈嵉鐨勯槻宕╂桨榛?
 	// -----------------------------------------
 	bestIndex := indexes[bestHash]
 	if bestIndex == nil || bestIndex.Block == nil {
@@ -733,24 +707,22 @@ func (n *Node) Start() {
 		}
 	}
 
-	// 🔥🔥🔥 絕對防禦：如果這裡是 nil，直接重置，不准往下跑！ 🔥🔥🔥
+	// 馃敟馃敟馃敟 绲曞皪闃茬Ζ锛氬鏋滈€欒！鏄?nil锛岀洿鎺ラ噸缃紝涓嶅噯寰€涓嬭窇锛?馃敟馃敟馃敟
 	if bestIndex == nil || bestIndex.Block == nil {
-		fmt.Printf("❌ [Fatal] 資料庫損壞：找不到 BestBlock (Hash: %s)\n", bestHash)
-		fmt.Println("🧹 正在清除錯誤的 meta 標籤，請重新啟動節點...")
+		fmt.Printf("鉂?[Fatal] 璩囨枡搴悕澹烇細鎵句笉鍒?BestBlock (Hash: %s)\n", bestHash)
+		fmt.Println("馃Ч 姝ｅ湪娓呴櫎閷鐨?meta 妯欑堡锛岃珛閲嶆柊鍟熷嫊绡€榛?..")
 		n.DB.Delete("meta", "best")
 		n.Blocks = make(map[string]*BlockIndex)
 		n.Chain = nil
 		n.UTXO = blockchain.NewUTXOSet(n.DB)
 		n.initGenesis()
-		return // 👈 強制結束，防止後面報錯
-	}
+		return // 馃憟 寮峰埗绲愭潫锛岄槻姝㈠緦闈㈠牨閷?	}
 
 	n.Best = bestIndex
 	n.Blocks = indexes
 
 	// -----------------------------------------
-	// 6️⃣ 重建鏈
-	// -----------------------------------------
+	// 6锔忊儯 閲嶅缓閺?	// -----------------------------------------
 	var chain []*blockchain.Block
 	cur := bestIndex
 
@@ -763,15 +735,13 @@ func (n *Node) Start() {
 
 	n.Chain = chain
 
-	// 這裡就是你原本報錯的 466 行，現在 bestIndex 絕對不可能是 nil 了
-	fmt.Printf("🏗  Loaded %d blocks from DB. Best height = %d\n",
+	// 閫欒！灏辨槸浣犲師鏈牨閷殑 466 琛岋紝鐝惧湪 bestIndex 绲曞皪涓嶅彲鑳芥槸 nil 浜?	fmt.Printf("馃彈  Loaded %d blocks from DB. Best height = %d\n",
 		len(chain), bestIndex.Height)
 
-	// ... (後面的 UTXO 和 Mempool 加載代碼保持不變) ...
-	// 請確認後面還有加載 UTXO 和 Mempool 的代碼，不要漏掉了
-
+	// ... (寰岄潰鐨?UTXO 鍜?Mempool 鍔犺級浠ｇ⒓淇濇寔涓嶈畩) ...
+	// 璜嬬⒑瑾嶅緦闈㈤倓鏈夊姞杓?UTXO 鍜?Mempool 鐨勪唬纰硷紝涓嶈婕忔帀浜?
 	// -----------------------------------------
-	// 7️⃣ 重建 UTXO
+	// 7锔忊儯 閲嶅缓 UTXO
 	// -----------------------------------------
 	n.UTXO = blockchain.NewUTXOSet(n.DB)
 	n.DB.Iterate("utxo", func(k, v []byte) {
@@ -784,56 +754,52 @@ func (n *Node) Start() {
 		n.UTXO.Set[key] = u
 		n.UTXO.AddrIndex[u.To] = append(n.UTXO.AddrIndex[u.To], key)
 	})
-	// ... (Mempool 初始代碼) ...
+	// ... (Mempool 鍒濆浠ｇ⒓) ...
 	n.Mempool = newNodeMempool(n.Mode, n.DB)
 	n.loadMempool()
 	n.IsSyncing = true
 
-	// ... (狀態設定) ...
+	// ... (鐙€鎱嬭ō瀹? ...
 	if n.Best == nil || n.Best.Height == 0 {
 		n.SyncState = SyncIBD
-		fmt.Println("🆕 Fresh node, starting IBD...")
+		fmt.Println("馃啎 Fresh node, starting IBD...")
 	} else {
 		n.SyncState = SyncHeaders
-		fmt.Printf("📥 Resuming sync from height %d...\n", n.Best.Height)
+		fmt.Printf("馃摜 Resuming sync from height %d...\n", n.Best.Height)
 	}
 
-	fmt.Println("✅ Node is ready and searching for peers...")
+	fmt.Println("鉁?Node is ready and searching for peers...")
 }
 func (n *Node) initGenesis() {
 	genesis := blockchain.NewGenesisBlock(n.Target)
 
 	// =========================================================
-	// 🔥 符合現實的寫法：以 Bits 為準 (Bits as Truth) 🔥
+	// 馃敟 绗﹀悎鐝惧鐨勫娉曪細浠?Bits 鐐烘簴 (Bits as Truth) 馃敟
 	// =========================================================
 
-	// 即使我們是創世者，我們也要模擬「從網路上收到這個區塊」的過程。
-	// 我們將 Bits 還原為 big.Int，這會丟失末位的精度，但这才是全網共識的 Target。
-	consensusTarget := utils.CompactToBig(genesis.Bits)
+	// 鍗充娇鎴戝€戞槸鍓典笘鑰咃紝鎴戝€戜篃瑕佹ā鎿€屽緸缍茶矾涓婃敹鍒伴€欏€嬪崁濉娿€嶇殑閬庣▼銆?	// 鎴戝€戝皣 Bits 閭勫師鐐?big.Int锛岄€欐渻涓熷け鏈綅鐨勭簿搴︼紝浣嗚繖鎵嶆槸鍏ㄧ恫鍏辫瓨鐨?Target銆?	consensusTarget := utils.CompactToBig(genesis.Bits)
 
-	// 使用這個「共識 Target」來計算工作量
-	work := computeWork(consensusTarget)
+	// 浣跨敤閫欏€嬨€屽叡璀?Target銆嶄締瑷堢畻宸ヤ綔閲?	work := computeWork(consensusTarget)
 
 	// =========================================================
 
 	hashHex := hex.EncodeToString(genesis.Hash)
-	// 🔴 核心修改：确保 bi 结构体包含了 Block 本体
+	// 馃敶 鏍稿績淇敼锛氱‘淇?bi 缁撴瀯浣撳寘鍚簡 Block 鏈綋
 	bi := &BlockIndex{
-		Block:      genesis, // 挂载本体
+		Block:      genesis, // 鎸傝浇鏈綋
 		Hash:       hashHex,
 		Height:     0,
 		CumWork:    work.Text(16),
 		CumWorkInt: work,
 		Parent:     nil,
-		Children:   []*BlockIndex{}, // 养成初始化切片的好习惯
-
+		Children:   []*BlockIndex{}, // 鍏绘垚鍒濆鍖栧垏鐗囩殑濂戒範鎯?
 		Bits:       genesis.Bits,
 		Timestamp:  genesis.Timestamp,
 		Nonce:      genesis.Nonce,
 		MerkleRoot: hex.EncodeToString(genesis.MerkleRoot),
 	}
 
-	// --- 写入数据库 ---
+	// --- 鍐欏叆鏁版嵁搴?---
 	n.DB.Put("blocks", hashHex, genesis.Serialize())
 
 	idxBytes, _ := json.Marshal(bi)
@@ -842,24 +808,23 @@ func (n *Node) initGenesis() {
 	n.DB.Put("meta", "best", []byte(hashHex))
 
 	// ---------------------------------------------------------
-	// 🔴 关键修改点：只保留一个 Map 的写入
-	// ---------------------------------------------------------
+	// 馃敶 鍏抽敭淇敼鐐癸細鍙繚鐣欎竴涓?Map 鐨勫啓鍏?	// ---------------------------------------------------------
 
-	// 写入唯一索引库 (BlockIndex 内部已经持有 genesis 指针)
+	// 鍐欏叆鍞竴绱㈠紩搴?(BlockIndex 鍐呴儴宸茬粡鎸佹湁 genesis 鎸囬拡)
 	n.Blocks[hashHex] = bi
 
-	// ❌ 删掉这行：n.BlockIndex[hashHex] = genesis
+	// 鉂?鍒犳帀杩欒锛歯.BlockIndex[hashHex] = genesis
 
 	n.Best = bi
 
-	// 主链视图 (如果你依然想保留 n.Chain 这个切片的话)
+	// 涓婚摼瑙嗗浘 (濡傛灉浣犱緷鐒舵兂淇濈暀 n.Chain 杩欎釜鍒囩墖鐨勮瘽)
 	n.Chain = []*blockchain.Block{genesis}
 
-	// 更新 UTXO
+	// 鏇存柊 UTXO
 	n.UTXO.Add(genesis.Transactions[0])
 
-	fmt.Println("🪐 Genesis block created.")
-	fmt.Printf("🔍 [Init] Genesis Bits: %d (預期: 504365055)\n", bi.Bits)
+	fmt.Println("馃獝 Genesis block created.")
+	fmt.Printf("馃攳 [Init] Genesis Bits: %d (闋愭湡: 504365055)\n", bi.Bits)
 	fmt.Println("GENESIS TARGET =", utils.FormatTargetHex(genesis.Target))
 }
 
@@ -909,7 +874,7 @@ func (n *Node) AddBlockInterface(blk *blockchain.Block) error {
 }
 
 func (n *Node) GetBestBlock() *blockchain.Block {
-	// 🛡️ 确保 Best 不为空且包含 Block 实体数据
+	// 馃洝锔?纭繚 Best 涓嶄负绌轰笖鍖呭惈 Block 瀹炰綋鏁版嵁
 	if n.Best == nil || n.Best.Block == nil {
 		return nil
 	}
@@ -917,7 +882,7 @@ func (n *Node) GetBestBlock() *blockchain.Block {
 }
 
 func (n *Node) PrintChainStatus() {
-	fmt.Println("📌 Chain Status")
+	fmt.Println("馃搶 Chain Status")
 	fmt.Println("Height:", n.Best.Height)
 	fmt.Println("Target:", n.Best.Block.Target.Text(16))
 	fmt.Println("CumWork:", n.Best.CumWorkInt.String())
@@ -925,22 +890,21 @@ func (n *Node) PrintChainStatus() {
 
 // RebuildUTXO rebuilds the full UTXO set from the chain stored in n.Chain.
 func (n *Node) RebuildUTXO() error {
-	n.mu.Lock() // 🚨 這裡要鎖住，確保重建時沒人亂動帳本
-	defer n.mu.Unlock()
-	fmt.Println("[Full Rebuild] Starting full ledger rebuild...")
+	n.mu.Lock() // 馃毃 閫欒！瑕侀帠浣忥紝纰轰繚閲嶅缓鏅傛矑浜轰簜鍕曞赋鏈?	defer n.mu.Unlock()
+    fmt.Println("[Full Rebuild] Starting full ledger rebuild...")
 
-	// 0️⃣ 核心防護：確保主鏈視圖是最新的
+	// 0锔忊儯 鏍稿績闃茶锛氱⒑淇濅富閺堣鍦栨槸鏈€鏂扮殑
 	n.UpdateChainFromBest()
 	if n.IsPrunedMode() && len(n.Chain) > 0 && n.Chain[0] != nil && n.Chain[0].Height != 0 {
-		fmt.Printf("[Full Rebuild] Pruned mode only keeps full block bodies from height %d onward; reusing the existing UTXO state.\n", n.Chain[0].Height)
+        fmt.Printf("[Full Rebuild] Pruned mode only keeps full block bodies from height %d onward; reusing the existing UTXO state.\n", n.Chain[0].Height)
 		return nil
 	}
 
-	// 1️⃣ 創建一個「純記憶體」的臨時帳本 (不要傳入 DB)
-	// 這樣在遍歷區塊時，Spend 和 Add 只會改記憶體，不會頻繁寫硬碟
+	// 1锔忊儯 鍓靛缓涓€鍊嬨€岀磾瑷樻喍楂斻€嶇殑鑷ㄦ檪甯虫湰 (涓嶈鍌冲叆 DB)
+	// 閫欐ǎ鍦ㄩ亶姝峰崁濉婃檪锛孲pend 鍜?Add 鍙渻鏀硅鎲堕珨锛屼笉鏈冮牷绻佸纭
 	tmpUtxo := blockchain.NewUTXOSet(nil)
 
-	// 2️⃣ 遍歷主鏈
+	// 2锔忊儯 閬嶆涓婚張
 	txCount := 0
 	var prevBlock *blockchain.Block
 	for _, block := range n.Chain {
@@ -965,24 +929,22 @@ func (n *Node) RebuildUTXO() error {
 		prevBlock = block
 	}
 
-	// 3️⃣ 準備切換：將臨時帳本重新關聯到正式 DB
+	// 3锔忊儯 婧栧倷鍒囨彌锛氬皣鑷ㄦ檪甯虫湰閲嶆柊闂滆伅鍒版寮?DB
 	tmpUtxo.DB = n.DB
 
-	// 4️⃣ 執行「一次性」落地
-	// 使用你剛寫好的 FlushToDB，它會清空舊 bucket 並把最新結果一次鎖定
-	fmt.Printf("[Full Rebuild] Rebuild complete (%d transactions). Flushing batched state to disk...\n", txCount)
+    fmt.Printf("[Full Rebuild] Rebuild complete (%d transactions). Flushing batched state to disk...\n", txCount)
 	tmpUtxo.FlushToDB()
 
-	// 5️⃣ 替換正式指標
+	// 5锔忊儯 鏇挎彌姝ｅ紡鎸囨
 	n.UTXO = tmpUtxo
 
-	fmt.Println("[Full Rebuild] Rebuild succeeded. Ledger state is fully synchronized.")
+    fmt.Println("[Full Rebuild] Rebuild succeeded. Ledger state is fully synchronized.")
 	return nil
 }
 
 func (n *Node) AllBodiesDownloaded() bool {
 	for _, bi := range n.Blocks {
-		// 只要有一個索引沒掛載 Block 實體，就沒下載完
+		// 鍙鏈変竴鍊嬬储寮曟矑鎺涜級 Block 瀵﹂珨锛屽氨娌掍笅杓夊畬
 		if bi == nil || bi.Block == nil || len(bi.Block.Transactions) == 0 {
 			return false
 		}
@@ -1061,8 +1023,7 @@ func (n *Node) GetTransaction(txid string) (*blockchain.Transaction, *blockchain
 		return nil, nil, ErrPrunedData
 	}
 
-	// 安全检查
-	if idx.TxOffset < 0 || idx.TxOffset >= len(block.Transactions) {
+	// 瀹夊叏妫€鏌?	if idx.TxOffset < 0 || idx.TxOffset >= len(block.Transactions) {
 		return nil, nil, fmt.Errorf("invalid TxOffset in txindex")
 	}
 
@@ -1077,7 +1038,7 @@ func (n *Node) loadMempool() {
 	n.DB.Iterate("mempool", func(k, v []byte) {
 		txid := string(k)
 
-		// 放入内存 mempool
+		// 鏀惧叆鍐呭瓨 mempool
 		n.Mempool.Txs[txid] = v
 		n.Mempool.TotalBytes += len(v)
 
@@ -1095,8 +1056,7 @@ func (n *Node) loadMempool() {
 			}
 		}
 
-		// ⭐ 重建 parent 依赖信息（你的逻辑）
-		tx, err := blockchain.DeserializeTransaction(v)
+		// 猸?閲嶅缓 parent 渚濊禆淇℃伅锛堜綘鐨勯€昏緫锛?		tx, err := blockchain.DeserializeTransaction(v)
 		if err == nil {
 			for _, in := range tx.Inputs {
 				if in.TxID == "" {
@@ -1118,10 +1078,10 @@ func (n *Node) loadMempool() {
 	removed := n.Mempool.PruneExpired()
 	remainingCount := len(n.Mempool.GetAll())
 	if removed > 0 {
-		log.Printf("🧹 [Mempool TTL] 啟動時清理了 %d 筆過期交易\n", removed)
+		log.Printf("馃Ч [Mempool TTL] 鍟熷嫊鏅傛竻鐞嗕簡 %d 绛嗛亷鏈熶氦鏄揬n", removed)
 	}
 
-	log.Printf("💾 Loaded %d mempool transactions from DB (%d expired, %d remaining)\n", loadedCount, removed, remainingCount)
+	log.Printf("馃捑 Loaded %d mempool transactions from DB (%d expired, %d remaining)\n", loadedCount, removed, remainingCount)
 }
 
 func (n *Node) maintainMempool() {
@@ -1133,29 +1093,27 @@ func (n *Node) maintainMempool() {
 			continue
 		}
 		if removed := n.Mempool.PruneExpired(); removed > 0 {
-			log.Printf("🧹 [Mempool TTL] 已清理 %d 筆過期交易\n", removed)
+			log.Printf("馃Ч [Mempool TTL] 宸叉竻鐞?%d 绛嗛亷鏈熶氦鏄揬n", removed)
 		}
 	}
 }
 
 func (n *Node) BroadcastNewBlock(b *blockchain.Block) {
 	if n.Broadcaster != nil {
-		// 這裡會呼叫 network/handle.go 裡面的實作
-		n.Broadcaster.BroadcastNewBlock(b)
+		// 閫欒！鏈冨懠鍙?network/handle.go 瑁￠潰鐨勫浣?		n.Broadcaster.BroadcastNewBlock(b)
 	}
 }
 
 func (n *Node) AddHeader(bi *BlockIndex) {
 	hashHex := bi.Hash
-	// 若已存在，不重复加入
+	// 鑻ュ凡瀛樺湪锛屼笉閲嶅鍔犲叆
 	if _, ok := n.Blocks[hashHex]; ok {
 		return
 	}
 
-	// 写入 header-only 索引库
-	n.Blocks[hashHex] = bi
+	// 鍐欏叆 header-only 绱㈠紩搴?	n.Blocks[hashHex] = bi
 
-	// 若高度更高，则更新 best
+	// 鑻ラ珮搴︽洿楂橈紝鍒欐洿鏂?best
 	if n.Best == nil || bi.Height > n.Best.Height {
 		n.Best = bi
 	}
@@ -1175,15 +1133,14 @@ func (n *Node) UpdateChainFromBest() {
 	var newChain []*blockchain.Block
 	cur := n.Best
 
-	// 從 Best 往前找 Parent，直到 Genesis，構建新的主鏈視圖
-	for cur != nil {
+	// 寰?Best 寰€鍓嶆壘 Parent锛岀洿鍒?Genesis锛屾寤烘柊鐨勪富閺堣鍦?	for cur != nil {
 		if cur.Block != nil {
 			newChain = append([]*blockchain.Block{cur.Block}, newChain...)
 		}
 		cur = cur.Parent
 	}
 	n.Chain = newChain
-	log.Printf("⛓️ Chain view updated. New Height: %d, Tip: %s", n.Best.Height, n.Best.Hash)
+	log.Printf("鉀擄笍 Chain view updated. New Height: %d, Tip: %s", n.Best.Height, n.Best.Hash)
 }
 
 func (n *Node) FindCommonAncestor(locator []string) *BlockIndex {
@@ -1193,14 +1150,14 @@ func (n *Node) FindCommonAncestor(locator []string) *BlockIndex {
 }
 
 func (n *Node) findCommonAncestorLocked(locator []string) *BlockIndex {
-	// locator 中找到第一个已知区块（从最近到最远）
+	// locator 涓壘鍒扮涓€涓凡鐭ュ尯鍧楋紙浠庢渶杩戝埌鏈€杩滐級
 	for _, hash := range locator {
 		if bi, ok := n.Blocks[hash]; ok {
 			return bi
 		}
 	}
 
-	// 找不到，返回 genesis
+	// 鎵句笉鍒帮紝杩斿洖 genesis
 	cur := n.Best
 	for cur != nil && cur.Parent != nil {
 		cur = cur.Parent
@@ -1325,37 +1282,32 @@ func (n *Node) StatusSnapshot() StatusSnapshot {
 }
 
 func (n *Node) updateUTXO(block *blockchain.Block) {
-	fmt.Printf("📂 [UTXO] 正在更新區塊 %d 的帳本狀態...\n", block.Height)
+	fmt.Printf("馃搨 [UTXO] 姝ｅ湪鏇存柊鍗€濉?%d 鐨勫赋鏈媭鎱?..\n", block.Height)
 
 	for _, tx := range block.Transactions {
-		// 1. 移除已花費的輸出 (Inputs)
+		// 1. 绉婚櫎宸茶姳璨荤殑杓稿嚭 (Inputs)
 		if !tx.IsCoinbase {
 			err := n.UTXO.Spend(tx)
 			if err != nil {
-				// 🛡️ 偵探提醒：如果在更新主鏈時發現錢不夠花，這是嚴重的共識錯誤
-				fmt.Printf("❌ [Fatal] 區塊 %d 交易 %s 花費失敗: %v\n", block.Height, tx.ID[:8], err)
-				// 在實際生產環境，這裡可能需要觸發鏈回滾或停止同步
-			}
+				// 馃洝锔?鍋垫帰鎻愰啋锛氬鏋滃湪鏇存柊涓婚張鏅傜櫦鐝鹃將涓嶅鑺憋紝閫欐槸鍤撮噸鐨勫叡璀橀尟瑾?				fmt.Printf("鉂?[Fatal] 鍗€濉?%d 浜ゆ槗 %s 鑺辫不澶辨晽: %v\n", block.Height, tx.ID[:8], err)
+				// 鍦ㄥ闅涚敓鐢㈢挵澧冿紝閫欒！鍙兘闇€瑕佽Ц鐧奸張鍥炴痪鎴栧仠姝㈠悓姝?			}
 		}
 
-		// 2. 添加新產生的輸出 (Outputs)
+		// 2. 娣诲姞鏂扮敘鐢熺殑杓稿嚭 (Outputs)
 		n.UTXO.Add(tx)
 	}
 
 	// ==========================================
-	// 🚀 關鍵新增：確保每一磚一瓦都刻在硬碟上
-	// ==========================================
-	// 這樣即使在下一個區塊進來前斷電，Kali 重啟後餘額依然是正確的
-	n.UTXO.FlushToDB()
+	// 馃殌 闂滈嵉鏂板锛氱⒑淇濇瘡涓€纾氫竴鐡﹂兘鍒诲湪纭涓?	// ==========================================
+	// 閫欐ǎ鍗充娇鍦ㄤ笅涓€鍊嬪崁濉婇€蹭締鍓嶆柗闆伙紝Kali 閲嶅暉寰岄椤嶄緷鐒舵槸姝ｇ⒑鐨?	n.UTXO.FlushToDB()
 	// ==========================================
 }
 
 func (n *Node) addTxsToMempool(txs []blockchain.Transaction) {
 	for _, tx := range txs {
-		// Coinbase 交易無法復活 (因為它們只在特定高度有效，且憑空產生)
+		// Coinbase 浜ゆ槗鐒℃硶寰╂椿 (鍥犵偤瀹冨€戝彧鍦ㄧ壒瀹氶珮搴︽湁鏁堬紝涓旀啈绌虹敘鐢?
 		if !tx.IsCoinbase {
-			// 使用 AddTxRBF 嘗試加入，如果 Mempool 滿了或有衝突會自動處理
-			n.Mempool.AddTxRBF(tx.ID, tx.Serialize(), n.UTXO, n.NodeID)
+			// 浣跨敤 AddTxRBF 鍢楄│鍔犲叆锛屽鏋?Mempool 婊夸簡鎴栨湁琛濈獊鏈冭嚜鍕曡檿鐞?			n.Mempool.AddTxRBF(tx.ID, tx.Serialize(), n.UTXO, n.NodeID)
 		}
 	}
 }
@@ -1365,16 +1317,14 @@ func (n *Node) IsOnMainChain(bi *BlockIndex) bool {
 		return false
 	}
 
-	// Archive 节点可直接从完整主链视图命中。
-	if bi.Height < uint64(len(n.Chain)) {
+	// Archive 鑺傜偣鍙洿鎺ヤ粠瀹屾暣涓婚摼瑙嗗浘鍛戒腑銆?	if bi.Height < uint64(len(n.Chain)) {
 		mainBlock := n.Chain[bi.Height]
 		if mainBlock != nil && hex.EncodeToString(mainBlock.Hash) == bi.Hash {
 			return true
 		}
 	}
 
-	// Pruned 节点的 n.Chain 可能只保留最近一段实体，退回到 Best 指针沿父链回溯判断。
-	for cur := n.Best; cur != nil && cur.Height >= bi.Height; cur = cur.Parent {
+	// Pruned 鑺傜偣鐨?n.Chain 鍙兘鍙繚鐣欐渶杩戜竴娈靛疄浣擄紝閫€鍥炲埌 Best 鎸囬拡娌跨埗閾惧洖婧垽鏂€?	for cur := n.Best; cur != nil && cur.Height >= bi.Height; cur = cur.Parent {
 		if cur.Height == bi.Height {
 			return cur.Hash == bi.Hash
 		}
@@ -1384,7 +1334,7 @@ func (n *Node) IsOnMainChain(bi *BlockIndex) bool {
 }
 
 func (n *Node) GetResetChan() chan bool {
-	// 確保不會返回 nil (如果初始化忘了 make)
+	// 纰轰繚涓嶆渻杩斿洖 nil (濡傛灉鍒濆鍖栧繕浜?make)
 	if n.MinerResetChan == nil {
 		n.MinerResetChan = make(chan bool, 1)
 	}
@@ -1418,8 +1368,7 @@ func (n *Node) SetMiningEnabled(enabled bool) bool {
 	return changed
 }
 
-// HasMissingBodies 檢查本地索引中是否存有「有頭無身」的區塊
-func (n *Node) HasMissingBodies() bool {
+// HasMissingBodies 妾㈡煡鏈湴绱㈠紩涓槸鍚﹀瓨鏈夈€屾湁闋劇韬€嶇殑鍗€濉?func (n *Node) HasMissingBodies() bool {
 	n.mu.Lock()
 	defer n.mu.Unlock()
 	return n.hasMissingBodiesLocked()
@@ -1483,8 +1432,7 @@ func (n *Node) Lock() {
 	n.mu.Lock()
 }
 
-// Unlock 公開的解鎖函數
-func (n *Node) Unlock() {
+// Unlock 鍏枊鐨勮В閹栧嚱鏁?func (n *Node) Unlock() {
 	n.mu.Unlock()
 }
 
@@ -1503,23 +1451,21 @@ func (n *Node) EvaluateSyncStatus(peerHeight uint64, peerWork *big.Int) {
 		localWork = n.Best.CumWorkInt
 	}
 
-	// 🚨 只有當鄰居比我強時，才准切換狀態進入同步
+	// 馃毃 鍙湁鐣堕劙灞呮瘮鎴戝挤鏅傦紝鎵嶅噯鍒囨彌鐙€鎱嬮€插叆鍚屾
 	if peerWork != nil && peerWork.Cmp(localWork) > 0 {
 		if !n.IsSyncing {
-			fmt.Printf("🛰️ [Network] 發現強大鄰居 (%x > %x)，啟動同步模式...\n", peerWork, localWork)
+			fmt.Printf("馃洶锔?[Network] 鐧肩従寮峰ぇ閯板眳 (%x > %x)锛屽暉鍕曞悓姝ユā寮?..\n", peerWork, localWork)
 		}
 		n.IsSyncing = true
 		n.SyncState = SyncHeaders
 	} else {
-		// 💡 鄰居比我弱？那就不理他，保持現狀。
-		// 絕對不要在這裡寫 n.IsSyncing = false ！！！
-		fmt.Printf("✅ [Network] 鄰居較弱或相等，維持當前狀態 (IsSyncing: %v)\n", n.IsSyncing)
+		// 馃挕 閯板眳姣旀垜寮憋紵閭ｅ氨涓嶇悊浠栵紝淇濇寔鐝剧媭銆?		// 绲曞皪涓嶈鍦ㄩ€欒！瀵?n.IsSyncing = false 锛侊紒锛?		fmt.Printf("鉁?[Network] 閯板眳杓冨急鎴栫浉绛夛紝缍寔鐣跺墠鐙€鎱?(IsSyncing: %v)\n", n.IsSyncing)
 	}
 }
 
-// GetBlockForQuery 提供給 API 或前端查詢區塊用
+// GetBlockForQuery 鎻愪緵绲?API 鎴栧墠绔煡瑭㈠崁濉婄敤
 func (n *Node) GetBlockForQuery(hashHex string) *blockchain.Block {
-	// 1. 先查本地有沒有 (如果還沒被修剪，或是自己就是 archival，就會命中這裡)
+	// 1. 鍏堟煡鏈湴鏈夋矑鏈?(濡傛灉閭勬矑琚慨鍓紝鎴栨槸鑷繁灏辨槸 archival锛屽氨鏈冨懡涓€欒！)
 	bi, ok := n.Blocks[hashHex]
 	if !ok {
 		return nil
@@ -1528,14 +1474,13 @@ func (n *Node) GetBlockForQuery(hashHex string) *blockchain.Block {
 		return bi.Block
 	}
 
-	// 2. 本地沒有！如果我們配置了 Broadcaster，就去向全節點求救！
+	// 2. 鏈湴娌掓湁锛佸鏋滄垜鍊戦厤缃簡 Broadcaster锛屽氨鍘诲悜鍏ㄧ瘈榛炴眰鏁戯紒
 	if n.IsPrunedMode() && n.Broadcaster != nil {
-		fmt.Printf("📦 [Node] 區塊 %s 不在本地硬碟，觸發 P2P 歷史調度...\n", hashHex[:8])
+		fmt.Printf("馃摝 [Node] 鍗€濉?%s 涓嶅湪鏈湴纭锛岃Ц鐧?P2P 姝峰彶瑾垮害...\n", hashHex[:8])
 		n.Broadcaster.RequestHistoricalBlock(hashHex)
 	}
 
-	// 回傳 nil，代表「正在查詢中」或「找不到」。
-	// (在實際應用中，前端可以提示用戶「正在從網路同步歷史資料，請稍後再試」)
+	// 鍥炲偝 nil锛屼唬琛ㄣ€屾鍦ㄦ煡瑭腑銆嶆垨銆屾壘涓嶅埌銆嶃€?	// (鍦ㄥ闅涙噳鐢ㄤ腑锛屽墠绔彲浠ユ彁绀虹敤鎴躲€屾鍦ㄥ緸缍茶矾鍚屾姝峰彶璩囨枡锛岃珛绋嶅緦鍐嶈│銆?
 	return nil
 }
 

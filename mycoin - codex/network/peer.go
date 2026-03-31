@@ -81,12 +81,12 @@ func (p *Peer) Send(msg Message) bool {
 
 	err := p.enc.Encode(msg)
 	if err != nil {
-		log.Printf("⚠️ [Network] 發送訊息失敗給 %s: %v\n", p.Addr, err)
+		log.Printf("[Network] failed to send message to %s: %v\n", p.Addr, err)
 		p.setDisconnectReason(err.Error())
 		p.closeLocked()
 		p.mu.Unlock()
 		p.notifyDisconnected()
-		log.Println("❌ peer disconnected:", p.Addr)
+		log.Println("[Network] peer disconnected:", p.Addr)
 		return false
 	}
 	p.mu.Unlock()
@@ -99,7 +99,7 @@ func (p *Peer) ReadLoop(onMessage func(*Peer, *Message)) {
 		var msg Message
 		if err := p.dec.Decode(&msg); err != nil {
 			p.CloseWithReason(err.Error())
-			log.Printf("❌ peer disconnected: %s (%v)\n", p.Addr, err)
+			log.Printf("[Network] peer disconnected: %s (%v)\n", p.Addr, err)
 			return
 		}
 

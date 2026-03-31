@@ -681,7 +681,7 @@ func (h *Handler) handleMempool(peer *Peer, msg *Message) {
 			},
 		})
 	} else {
-		fmt.Printf("[P2P] peer %s requested the mempool but there were no transactions to advertise\\n", peer.Addr)
+		fmt.Printf("[P2P] peer %s requested the mempool but there were no transactions to advertise\n", peer.Addr)
 	}
 }
 
