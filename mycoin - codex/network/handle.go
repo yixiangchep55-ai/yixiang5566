@@ -41,6 +41,45 @@ func NewHandler(n *node.Node) *Handler {
 	}
 }
 
+func (h *Handler) strongestActivePeer() (*Peer, uint64, *big.Int, string) {
+	if h == nil || h.Network == nil {
+		return nil, 0, nil, ""
+	}
+
+	h.Network.mu.Lock()
+	defer h.Network.mu.Unlock()
+
+	var bestPeer *Peer
+	var bestHeight uint64
+	var bestWork *big.Int
+	var bestAddr string
+
+	for _, peer := range h.Network.Peers {
+		if peer == nil || !peer.IsActive() {
+			continue
+		}
+
+		peerWork := new(big.Int)
+		if _, ok := peerWork.SetString(strings.TrimSpace(peer.CumWork), 16); !ok {
+			continue
+		}
+
+		if bestWork == nil || peerWork.Cmp(bestWork) > 0 || (peerWork.Cmp(bestWork) == 0 && peer.Height > bestHeight) {
+			bestPeer = peer
+			bestHeight = peer.Height
+			bestWork = new(big.Int).Set(peerWork)
+			bestAddr = peer.Addr
+		}
+	}
+
+	return bestPeer, bestHeight, bestWork, bestAddr
+}
+
+func (h *Handler) StrongestPeerSyncTarget() (uint64, *big.Int, string) {
+	_, height, work, addr := h.strongestActivePeer()
+	return height, work, addr
+}
+
 func (h *Handler) pruneClosedPeersLocked() {
 	for nodeID, p := range h.Network.Peers {
 		if p == nil || p.IsClosed() {
@@ -753,6 +792,26 @@ func (h *Handler) finishSyncing() bool {
 	}
 	if actualBest == nil {
 		h.Node.Unlock()
+		return false
+	}
+
+	strongestPeer, strongestPeerHeight, strongestPeerWork, strongestPeerAddr := h.strongestActivePeer()
+	actualWork := big.NewInt(0)
+	if actualBest.CumWorkInt != nil {
+		actualWork = new(big.Int).Set(actualBest.CumWorkInt)
+	}
+	if strongestPeerWork != nil && actualWork.Cmp(strongestPeerWork) < 0 {
+		fmt.Printf("[Sync] refusing to mark synced because peer %s advertises more work (local height %d, peer height %d)\n", strongestPeerAddr, actualBest.Height, strongestPeerHeight)
+		h.Node.IsSyncing = true
+		h.Node.SyncState = node.SyncHeaders
+		h.Node.HeadersSynced = false
+		h.Node.Unlock()
+		if strongestPeer != nil {
+			strongestPeer.Send(Message{
+				Type: MsgGetHeaders,
+				Data: GetHeadersPayload{Locators: h.buildBlockLocator()},
+			})
+		}
 		return false
 	}
 
