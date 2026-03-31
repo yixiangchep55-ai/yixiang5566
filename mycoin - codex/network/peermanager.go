@@ -1,4 +1,4 @@
-﻿package network
+package network
 
 import (
 	"context"
@@ -14,7 +14,7 @@ import (
 var DefaultSeeds = []string{
 	// "192.168.100.169:9001",
 	// "192.168.100.215:9001",
-	"149.118.150.229:9001",
+	//"seed1.yicoin.org:9001",
 }
 
 type PeerManager struct {
@@ -394,6 +394,57 @@ func (pm *PeerManager) SetPeerAdvertiseAddr(peer *Peer, addr string) string {
 	return peer.AdvertiseAddr
 }
 
+func (pm *PeerManager) ResolveAdvertiseConflict(peer *Peer) bool {
+	if pm == nil || peer == nil || peer.NodeID == 0 {
+		return true
+	}
+
+	addr := normalizePeerAddr(peer.AdvertiseAddr)
+	if addr == "" {
+		return true
+	}
+
+	localNodeID := uint64(0)
+	if pm.Network != nil && pm.Network.Node != nil {
+		localNodeID = pm.Network.Node.NodeID
+	}
+
+	conflicts := make([]*Peer, 0)
+
+	pm.mu.Lock()
+	for _, candidate := range pm.Active {
+		if candidate == nil || candidate == peer || candidate.IsClosed() {
+			continue
+		}
+
+		candidateAddr := normalizePeerAddr(candidate.AdvertiseAddr)
+		if candidateAddr == "" {
+			candidateAddr = normalizePeerAddr(candidate.Addr)
+		}
+		if candidateAddr != addr {
+			continue
+		}
+		if candidate.NodeID != 0 && candidate.NodeID != peer.NodeID {
+			continue
+		}
+
+		conflicts = append(conflicts, candidate)
+	}
+	pm.mu.Unlock()
+
+	for _, candidate := range conflicts {
+		if shouldPreferNewPeer(localNodeID, candidate, peer) {
+			candidate.CloseWithReason("duplicate advertised peer: preferred newer connection")
+			continue
+		}
+
+		peer.CloseWithReason("duplicate advertised peer: preferred existing connection")
+		return false
+	}
+
+	return true
+}
+
 func (pm *PeerManager) RegisterPeerAdvertiseAddr(peer *Peer) {
 	if peer == nil {
 		return
@@ -541,9 +592,7 @@ func (pm *PeerManager) LoadStaticSeeds() {
 
 func (pm *PeerManager) QueryDNSSeeds() {
 	seeds := []string{
-		"seed1.mycoin.org",
-		"seed2.mycoin.org",
-		"seed.mycoin.net",
+		"seed1.yicoin.org",
 	}
 
 	rand.Shuffle(len(seeds), func(i, j int) {

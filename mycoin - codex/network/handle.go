@@ -1,6 +1,7 @@
 package network
 
 import (
+	"bytes"
 	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
@@ -50,7 +51,7 @@ func (h *Handler) pruneClosedPeersLocked() {
 
 func (h *Handler) OnMessage(peer *Peer, msg *Message) {
 	if h.debugBlockTraffic && msg.Type == MsgBlock {
-		fmt.Printf("🕵️ [Debug] TCP 收到 MsgBlock 來自 %s (長度 %v)\n", peer.Addr, msg.Data)
+		fmt.Printf("[Debug] TCP Received MsgBlock from %s (Data: %v)\n", peer.Addr, msg.Data)
 	}
 	switch msg.Type {
 
@@ -192,6 +193,9 @@ func (h *Handler) handleVersion(peer *Peer, msg *Message) {
 	peer.NodeID = v.NodeID
 	if h.Network != nil && h.Network.PeerManager != nil {
 		h.Network.PeerManager.SetPeerAdvertiseAddr(peer, v.AdvertiseAddr)
+		if !h.Network.PeerManager.ResolveAdvertiseConflict(peer) {
+			return
+		}
 	}
 
 	if peer.State == StateInit {
@@ -238,12 +242,11 @@ func (h *Handler) handleVersion(peer *Peer, msg *Message) {
 func (h *Handler) handleVerAck(peer *Peer, msg *Message) {
 	if peer.State >= StateVersionRecv {
 
-		h.Network.mu.Lock() // 🔒 上鎖
-		h.pruneClosedPeersLocked()
+		h.Network.mu.Lock()
 		var peerToClose *Peer
 
 		if peer.NodeID == h.Network.Node.NodeID {
-			fmt.Println("❌ 警告：偵測到自我連線 (NodeID 相同)，拒絕加入名單！")
+			fmt.Println("[Security] detected a self-connection by NodeID; rejecting duplicate local peer")
 			h.Network.mu.Unlock()
 			peer.CloseWithReason("self connection rejected")
 			return
@@ -256,7 +259,7 @@ func (h *Handler) handleVerAck(peer *Peer, msg *Message) {
 				return
 			}
 
-			fmt.Printf("🔄 偵測到重複的節點 NodeID: %d，保留舊連線 %s，斷開新連線...\n", peer.NodeID, existingPeer.Addr)
+			fmt.Printf("[Network] Rejecting duplicate connection from NodeID: %d, preferring existing peer at %s\n", peer.NodeID, existingPeer.Addr)
 			if shouldPreferNewPeer(h.Network.Node.NodeID, existingPeer, peer) {
 				delete(h.Network.Peers, peer.NodeID)
 				peerToClose = existingPeer
@@ -268,7 +271,7 @@ func (h *Handler) handleVerAck(peer *Peer, msg *Message) {
 		}
 
 		peer.State = StateActive
-		log.Printf("✅ peer active: %s (NodeID: %d)\n", peer.Addr, peer.NodeID)
+		log.Printf("[Network] Peer active: %s (NodeID: %d)\n", peer.Addr, peer.NodeID)
 
 		h.Network.Peers[peer.NodeID] = peer
 		currentCount := len(h.Network.Peers)
@@ -279,7 +282,7 @@ func (h *Handler) handleVerAck(peer *Peer, msg *Message) {
 			h.Network.PeerManager.RegisterPeerAdvertiseAddr(peer)
 		}
 
-		fmt.Printf("🔒 [Network] 已將 NodeID %d 強制加入廣播名單，目前連線數: %d\n", peer.NodeID, currentCount)
+		fmt.Printf("[Network] Registered new peer NodeID %d. Total active peers: %d\n", peer.NodeID, currentCount)
 
 		if peerToClose != nil {
 			peerToClose.CloseWithReason(fmt.Sprintf("duplicate node id %d: preferred %s", peer.NodeID, peer.Addr))
@@ -298,24 +301,24 @@ func (h *Handler) handleVerAck(peer *Peer, msg *Message) {
 func (h *Handler) handleInv(peer *Peer, msg *Message) {
 
 	if h.debugP2PTraffic {
-		fmt.Printf("🕵️ [Kali-Debug] 收到來自 %s 的 Inv 訊息！準備拆封...\n", peer.Addr)
+		fmt.Printf("[Kali-Debug] Received Inv message from %s\n", peer.Addr)
 	}
 
 	var inv InvPayload
 	if err := decode(msg.Data, &inv); err != nil {
 
 		if h.debugP2PTraffic {
-			fmt.Printf("❌ [Kali-Debug] 解碼 InvPayload 失敗！錯誤原因: %v\n", err)
+			fmt.Printf("[Kali-Debug] Failed to decode InvPayload: %v\n", err)
 		}
 
 		if h.debugP2PTraffic {
-			fmt.Printf("❌ [Kali-Debug] 原始 msg.Data 內容: %+v\n", msg.Data)
+			fmt.Printf("[Kali-Debug] Raw msg.Data: %+v\n", msg.Data)
 		}
 		return
 	}
 
 	if h.debugP2PTraffic {
-		fmt.Printf("✅ [Kali-Debug] 成功拆封 Inv，裡面有 %d 筆 %s 類型的資料\n", len(inv.Hashes), inv.Type)
+		fmt.Printf("[Kali-Debug] received Inv message with %d hashes of type %s\\n", len(inv.Hashes), inv.Type)
 	}
 
 	switch inv.Type {
@@ -342,7 +345,7 @@ func (h *Handler) handleInv(peer *Peer, msg *Message) {
 				continue
 			}
 
-			fmt.Printf("📥 [P2P] 看到新交易 %s，準備發送 GetData...\n", txid[:8])
+			fmt.Printf("[P2P] Requesting tx %s via GetData...\n", txid[:8])
 			if !peer.Send(Message{
 				Type: MsgGetData,
 				Data: GetDataPayload{
@@ -360,7 +363,7 @@ func (h *Handler) handleGetData(peer *Peer, msg *Message) {
 	var req GetDataPayload
 	if err := decode(msg.Data, &req); err != nil {
 		if h.debugP2PTraffic {
-			fmt.Printf("❌ [Windows-Debug] 解碼 GetDataPayload 失敗！錯誤原因: %v\n", err)
+			fmt.Printf("[Windows-Debug] Failed to decode GetDataPayload: %v\n", err)
 		}
 		return
 	}
@@ -370,7 +373,7 @@ func (h *Handler) handleGetData(peer *Peer, msg *Message) {
 
 		bi := h.Node.Blocks[req.Hash]
 		if bi == nil || bi.Block == nil {
-			fmt.Printf("🤷 [P2P] 鄰居 %s 索取區塊 %s，但本地已修剪或無實體資料，忽略請求。\n", peer.Addr, req.Hash[:8])
+			fmt.Printf("[P2P] peer %s requested block %s but the full block body is not available locally\\n", peer.Addr, req.Hash[:8])
 			return
 		}
 
@@ -383,18 +386,18 @@ func (h *Handler) handleGetData(peer *Peer, msg *Message) {
 	case "tx":
 
 		if h.debugP2PTraffic {
-			fmt.Printf("🕵️ [Windows-Debug] 收到來自 %s 的 GetData，索取【交易】: %s\n", peer.Addr, req.Hash[:8])
+			fmt.Printf("[Windows-Debug] received GetData for tx %s from %s\n", req.Hash[:8], peer.Addr)
 		}
 		tx, ok := h.Node.Mempool.Get(req.Hash)
 		if !ok {
 			if h.debugP2PTraffic {
-				fmt.Printf("⚠️ [Windows-Debug] 找不到交易 %s\n", req.Hash[:8])
+				fmt.Printf("[Windows-Debug] requested tx %s was not found in the mempool\n", req.Hash[:8])
 			}
 			return
 		}
 
 		if h.debugP2PTraffic {
-			fmt.Printf("📤 [P2P-交貨] 找到交易 %s，正在發送 MsgTx 給 %s...\n", req.Hash[:8], peer.Addr)
+			fmt.Printf("[P2P] sending MsgTx for %s to %s\n", req.Hash[:8], peer.Addr)
 		}
 		peer.Send(Message{
 			Type: MsgTx,
@@ -410,13 +413,19 @@ func (h *Handler) handleGetData(peer *Peer, msg *Message) {
 func (h *Handler) handleBlock(peer *Peer, msg *Message) {
 	var dto BlockDTO
 	if err := decode(msg.Data, &dto); err != nil {
-		log.Printf("❌ [Network] Block decode error from %s: %v", peer.Addr, err)
+		log.Printf("[Network] block decode error from %s: %v", peer.Addr, err)
 
 		return
 	}
 
 	blk := DTOToBlock(dto)
-	hashHex := hex.EncodeToString(blk.Hash)
+	calcHash := blk.CalcHash()
+	if len(blk.Hash) > 0 && !bytes.Equal(blk.Hash, calcHash) {
+		log.Printf("[Security] rejected block from %s: claimed hash does not match recomputed hash", peer.Addr)
+		return
+	}
+	blk.Hash = calcHash
+	hashHex := hex.EncodeToString(calcHash)
 	prevHex := hex.EncodeToString(blk.PrevHash)
 	h.releaseBlockRequest(hashHex)
 
@@ -435,14 +444,14 @@ func (h *Handler) handleBlock(peer *Peer, msg *Message) {
 	if alreadyHasBody {
 
 		if shouldCheckMissing {
-			fmt.Printf("🔄 [Sync] 收到已知區塊 %d，但工作量更高，觸發補缺檢查...\n", blk.Height)
+			fmt.Printf("[Sync] already have block body for height %d; checking for missing bodies\n", blk.Height)
 			h.requestMissingBlockBodies(peer)
 		}
 
 		return
 	}
 
-	fmt.Printf("🌐 [Network] 收到區塊: 高度 %d, Hash: %s\n", blk.Height, hashHex)
+	fmt.Printf("[Network] received block height %d, hash %s\n", blk.Height, hashHex)
 
 	h.Node.Lock()
 	localBodyHeight := uint64(0)
@@ -469,7 +478,7 @@ func (h *Handler) handleBlock(peer *Peer, msg *Message) {
 			bi = nil
 		}
 		h.Node.Unlock()
-		fmt.Printf("⚠️ 缺少父塊 Header %s，存入孤立池\n", prevHex)
+		fmt.Printf("[Sync] missing parent header %s; storing block as orphan and requesting more headers\\n", prevHex)
 		h.Node.AddOrphan(blk)
 		peer.Send(Message{
 			Type: MsgGetHeaders,
@@ -478,13 +487,31 @@ func (h *Handler) handleBlock(peer *Peer, msg *Message) {
 		return
 	}
 	parentHasBody := parent.Block != nil
+	expectedHeight := parent.Height + 1
+	if blk.Height != expectedHeight {
+		if bi != nil && bi.Block == nil {
+			if bi.Parent != nil {
+				filtered := bi.Parent.Children[:0]
+				for _, child := range bi.Parent.Children {
+					if child != nil && child.Hash != bi.Hash {
+						filtered = append(filtered, child)
+					}
+				}
+				bi.Parent.Children = filtered
+			}
+			delete(h.Node.Blocks, hashHex)
+		}
+		h.Node.Unlock()
+		log.Printf("[Security] rejected block %s from %s: invalid height %d (expected %d)", hashHex, peer.Addr, blk.Height, expectedHeight)
+		return
+	}
 
 	work := node.WorkFromTarget(blk.Target)
 	if bi == nil {
 		bi = &node.BlockIndex{
 			Hash:       hashHex,
 			PrevHash:   prevHex,
-			Height:     blk.Height,
+			Height:     expectedHeight,
 			Timestamp:  blk.Timestamp,
 			Bits:       blk.Bits,
 			Nonce:      blk.Nonce,
@@ -528,28 +555,45 @@ func (h *Handler) handleBlock(peer *Peer, msg *Message) {
 			parent.Children = append(parent.Children, bi)
 		}
 	}
+	if bi != nil {
+		bi.Height = expectedHeight
+	}
 	blockHasBody := bi != nil && bi.Block != nil
 	h.Node.Unlock()
 	if !blockHasBody && blk.Height < localBodyHeight && mainAtHeightHash == hashHex {
 		if err := h.Node.AttachHistoricalBlock(blk); err != nil {
-			fmt.Printf("❌ [Prune] 歷史區塊 %d (%s) 回填失敗: %v\n", blk.Height, hashHex, err)
+			fmt.Printf("[Prune] failed to attach historical block %d (%s): %v\n", blk.Height, hashHex, err)
 			return
 		}
-		fmt.Printf("📚 [Prune] 已回填歷史區塊 %d (%s)\n", blk.Height, hashHex[:8])
+		fmt.Printf("[Prune] successfully attached historical block %d (%s)\n", blk.Height, hashHex[:8])
 		return
 	}
 
 	if !parentHasBody {
 		h.requestBlock(peer, prevHex)
-		fmt.Printf("⚠️ 父塊 %s 只有標頭缺少實體，將區塊 %d 存入孤立池\n", prevHex, blk.Height)
+		log.Printf("[Sync] parent %s only has a header, storing block %d as orphan", prevHex, blk.Height)
 		h.Node.AddOrphan(blk)
 		return
 	}
 
 	success := h.Node.AddBlock(blk)
 	if !success {
+		h.Node.Lock()
+		if current := h.Node.Blocks[hashHex]; current != nil && current.Block == nil {
+			if current.Parent != nil {
+				filtered := current.Parent.Children[:0]
+				for _, child := range current.Parent.Children {
+					if child != nil && child.Hash != current.Hash {
+						filtered = append(filtered, child)
+					}
+				}
+				current.Parent.Children = filtered
+			}
+			delete(h.Node.Blocks, hashHex)
+		}
+		h.Node.Unlock()
 
-		fmt.Printf("❌ 區塊 %d (%s) 驗證失敗，拒絕接收\n", blk.Height, hashHex)
+		log.Printf("[Security] rejected block %d (%s): validation failed", blk.Height, hashHex)
 		return
 	}
 
@@ -573,10 +617,10 @@ func (h *Handler) handleBlock(peer *Peer, msg *Message) {
 		isMainChainTip = (hashHex == bestHash)
 
 		if isMainChainTip {
-			fmt.Printf("🚨 [Sync] 偵測到全網最強區塊 (%d) 實體已落地！準備結算...\n", blk.Height)
+			fmt.Printf("[Sync] received the main-chain tip body for block %d; attempting final sync\\n", blk.Height)
 
 			if h.finishSyncing() {
-				fmt.Printf("🎓 [Network] 核心主鏈完美同步！防護罩解除，切換為正常模式！\n")
+				fmt.Printf("[Network] sync completed after receiving block %d; requesting mempool\\n", blk.Height)
 
 				h.requestMempool(peer)
 			}
@@ -594,9 +638,9 @@ func (h *Handler) handleBlock(peer *Peer, msg *Message) {
 	}
 
 	if isSyncing && !hasMissingBodies {
-		fmt.Printf("🚨 [事後雷達] 偵測到所有區塊皆已補齊！準備執行帳本重建...\n")
+		fmt.Println("[Sync] received the main-chain tip body; attempting to finish sync")
 		if h.finishSyncing() {
-			fmt.Printf("🎓 [Network] (雷達觸發) 鷹架與磚塊完美吻合，完成帳本重建，正式畢業！\n")
+			fmt.Println("[Network] sync finished after receiving the last block body; requesting mempool")
 			h.requestMempool(peer)
 		}
 	}
@@ -610,7 +654,7 @@ func (h *Handler) requestMempool(peer *Peer) {
 		return
 	}
 
-	fmt.Printf("📢 [P2P] 向 %s 發送 MsgMempool 請求，索取未確認交易...\n", peer.Addr)
+	fmt.Printf("[P2P] requesting mempool from %s\n", peer.Addr)
 	peer.Send(Message{
 		Type: "mempool",
 		Data: nil,
@@ -618,7 +662,7 @@ func (h *Handler) requestMempool(peer *Peer) {
 }
 
 func (h *Handler) handleMempool(peer *Peer, msg *Message) {
-	fmt.Printf("📥 [P2P] 收到來自 %s 的 Mempool 請求\n", peer.Addr)
+	fmt.Printf("[P2P] peer %s requested the mempool inventory\n", peer.Addr)
 
 	var txIDs []string
 
@@ -627,7 +671,7 @@ func (h *Handler) handleMempool(peer *Peer, msg *Message) {
 	}
 
 	if len(txIDs) > 0 {
-		fmt.Printf("📤 [P2P] 發現 %d 筆未確認交易，正在打包 Inv 發送給 %s...\n", len(txIDs), peer.Addr)
+		fmt.Printf("[P2P] advertising %d mempool txs to %s\n", len(txIDs), peer.Addr)
 
 		peer.Send(Message{
 			Type: MsgInv,
@@ -637,16 +681,16 @@ func (h *Handler) handleMempool(peer *Peer, msg *Message) {
 			},
 		})
 	} else {
-		fmt.Printf("🤷 [P2P] 我的 Mempool 是空的，無交易可提供給 %s。\n", peer.Addr)
+		fmt.Printf("[P2P] peer %s requested the mempool but there were no transactions to advertise\\n", peer.Addr)
 	}
 }
 
 func (h *Handler) finishSyncing() bool {
-	fmt.Println("📥 所有區塊內容已補齊，準備切換至最新鏈狀態...")
+	fmt.Println("[Sync] checking for missing parents in the local database...")
 
 	h.Node.Lock()
 
-	fmt.Println("🩹 執行深度鏈條修復...")
+	fmt.Println("[Sync] resolving parent-child block links...")
 	for {
 		changed := false
 		for _, bi := range h.Node.Blocks {
@@ -672,7 +716,7 @@ func (h *Handler) finishSyncing() bool {
 							h.Node.Blocks[pIdx.Hash] = pIdx
 							bi.Parent = pIdx
 							changed = true
-							fmt.Printf("💾 從硬碟救援了高度 %d 的區塊指標\n", pIdx.Height)
+							fmt.Printf("[Sync] reconstructed missing parent body at height %d from the local database\n", pIdx.Height)
 						}
 					}
 				}
@@ -685,7 +729,25 @@ func (h *Handler) finishSyncing() bool {
 
 	var actualBest *node.BlockIndex
 	for _, bi := range h.Node.Blocks {
-		if bi.Block != nil && (actualBest == nil || bi.Height > actualBest.Height) {
+		if bi == nil || bi.Block == nil {
+			continue
+		}
+		if actualBest == nil {
+			actualBest = bi
+			continue
+		}
+
+		candidateWork := bi.CumWorkInt
+		if candidateWork == nil {
+			candidateWork = big.NewInt(0)
+		}
+		bestWork := actualBest.CumWorkInt
+		if bestWork == nil {
+			bestWork = big.NewInt(0)
+		}
+
+		cmp := candidateWork.Cmp(bestWork)
+		if cmp > 0 || (cmp == 0 && (bi.Height > actualBest.Height || (bi.Height == actualBest.Height && bi.Hash > actualBest.Hash))) {
 			actualBest = bi
 		}
 	}
@@ -705,12 +767,12 @@ func (h *Handler) finishSyncing() bool {
 	}
 	if len(newMainChain) > 0 && newMainChain[0].Height != 0 && h.Node.IsPrunedMode() {
 		if err := h.Node.ActivateBestChainFromPrunedSync(actualBest); err != nil {
-			fmt.Printf("❌ [Sync] pruned chain activation failed: %v\n", err)
+			fmt.Printf("[Sync] pruned chain activation failed: %v\n", err)
 			h.Node.Unlock()
 			return false
 		}
 
-		fmt.Printf("ℹ️ [Sync] pruned 模式僅保留從高度 %d 開始的區塊實體，沿用持久化 UTXO 完成收尾。\n", newMainChain[0].Height)
+		fmt.Printf("[Sync] pruned activation succeeded at height %d; rebuilding UTXO from the pruned main chain\n", newMainChain[0].Height)
 		h.Node.Unlock()
 
 		h.Node.Lock()
@@ -719,7 +781,7 @@ func (h *Handler) finishSyncing() bool {
 			if h.Node.Best != nil {
 				currentBestHash = h.Node.Best.Hash
 			}
-			fmt.Printf("⚠️ [Sync] pruned 收尾期間鏈頭變化 (%s -> %s)，回到同步模式重試。\n", targetBestHash, currentBestHash)
+			fmt.Printf("[Sync] pruned activation target changed while finishing sync (%s -> %s); skipping finalization\n", targetBestHash, currentBestHash)
 			h.Node.IsSyncing = true
 			h.Node.SyncState = node.SyncBodies
 			h.Node.Unlock()
@@ -728,7 +790,7 @@ func (h *Handler) finishSyncing() bool {
 		h.Node.SyncState = node.SyncSynced
 		h.Node.IsSyncing = false
 		h.Node.DB.Put("meta", "best", []byte(h.Node.Best.Hash))
-		fmt.Printf("✅ 同步完成！高度: %d\n", h.Node.Best.Height)
+		fmt.Printf("[Sync] sync completed. Best height is now %d\n", h.Node.Best.Height)
 		h.Node.Unlock()
 		if h.Node.IsPrunedMode() {
 			go h.Node.PruneBlocks()
@@ -738,12 +800,12 @@ func (h *Handler) finishSyncing() bool {
 	}
 
 	if len(newMainChain) == 0 || newMainChain[0].Height != 0 {
-		fmt.Printf("⚠️ [Sync] 依然斷鏈！目前起點高度: %d\n",
+		fmt.Printf("[Sync] finalization failed. Best chain height remains at %d\n",
 			func() uint64 {
 				if len(newMainChain) > 0 {
-					fmt.Printf("🕵️ [Debug] 第 1 塊積木(Height: %d) 紀錄的爸爸 Hash 是: %x\n",
+					fmt.Printf("[Debug] best chain branch starts at height %d, prev hash %x\n",
 						newMainChain[0].Height, newMainChain[0].PrevHash)
-					fmt.Printf("🕵️ [Debug] 我現在記憶體裡的創世塊 Hash 是: %x\n",
+					fmt.Printf("[Debug] genesis block hash: %x\n",
 						h.Node.Blocks[hex.EncodeToString(blockchain.NewGenesisBlock(h.Node.Target).Hash)].Hash)
 					return newMainChain[0].Height
 				}
@@ -758,12 +820,20 @@ func (h *Handler) finishSyncing() bool {
 
 	h.Node.Unlock()
 
-	fmt.Println("💰 鏈條完整！啟動全局帳本重建...")
+	fmt.Println("[Sync] rebuilding UTXO set...")
 	if err := h.Node.RebuildUTXO(); err != nil {
-		fmt.Printf("❌ [Sync] full validation failed during rebuild: %v\n", err)
+		fmt.Printf("[Sync] full validation failed during rebuild: %v\n", err)
 		h.Node.Lock()
-		h.Node.Chain = oldChain
-		h.Node.Best = oldBest
+		currentBestHash := ""
+		if h.Node.Best != nil {
+			currentBestHash = h.Node.Best.Hash
+		}
+		if currentBestHash == targetBestHash {
+			h.Node.Chain = oldChain
+			h.Node.Best = oldBest
+		} else {
+			fmt.Printf("[Sync] skipping rollback because best chain advanced during rebuild (%s -> %s)\n", targetBestHash, currentBestHash)
+		}
 		h.Node.IsSyncing = true
 		h.Node.SyncState = node.SyncBodies
 		h.Node.Unlock()
@@ -788,7 +858,7 @@ func (h *Handler) finishSyncing() bool {
 		if h.Node.Best != nil {
 			currentBestHash = h.Node.Best.Hash
 		}
-		fmt.Printf("⚠️ [Sync] 鏈頭在重建期間發生變化 (%s -> %s)，回到同步模式重試。\n", targetBestHash, currentBestHash)
+		fmt.Printf("[Sync] best chain changed before final sync commit (%s -> %s); returning to body sync\\n", targetBestHash, currentBestHash)
 		h.Node.IsSyncing = true
 		h.Node.SyncState = node.SyncBodies
 		h.Node.Unlock()
@@ -797,7 +867,7 @@ func (h *Handler) finishSyncing() bool {
 	h.Node.SyncState = node.SyncSynced
 	h.Node.IsSyncing = false
 	h.Node.DB.Put("meta", "best", []byte(h.Node.Best.Hash))
-	fmt.Printf("✅ 同步完成！高度: %d\n", h.Node.Best.Height)
+	fmt.Printf("[Sync] sync completed. Best height is now %d\n", h.Node.Best.Height)
 	h.Node.Unlock()
 	if h.Node.IsPrunedMode() {
 		go h.Node.PruneBlocks()
@@ -866,12 +936,12 @@ func (h *Handler) handleGetAddr(peer *Peer, msg *Message) {
 		Data: addrs,
 	})
 
-	log.Printf("📤 Sent %d addrs to %s", len(addrs), peer.Addr)
+	log.Printf("[Network] sent %d addrs to %s", len(addrs), peer.Addr)
 }
 func (h *Handler) handleAddr(peer *Peer, msg *Message) {
 	var addrs []string
 	if err := decode(msg.Data, &addrs); err != nil {
-		log.Println("❌ failed to decode addr payload:", err)
+		log.Println("[Network] failed to decode addr payload:", err)
 		return
 	}
 
@@ -905,14 +975,14 @@ func (h *Handler) handleAddr(peer *Peer, msg *Message) {
 			pm.mu.Unlock()
 
 			if currentActive < maxPeers {
-				log.Printf("🌐 [Network] 發現新鄰居 %s，立即嘗試主動建立直連...", addr)
+				log.Printf("[Network] connecting to new peer %s\n", addr)
 				go pm.Connect(addr)
 			}
 		}
 	}
 	h.Node.Unlock()
 
-	log.Printf("🌍 Received %d new addrs from %s", addedCount, peer.Addr)
+	log.Printf("[Network] received %d new addrs from %s", addedCount, peer.Addr)
 
 	pm.ensurePeers()
 }
@@ -926,7 +996,7 @@ func (h *Handler) handleTx(peer *Peer, msg *Message) {
 	dataMap, ok := msg.Data.(map[string]interface{})
 	if !ok {
 		if h.debugP2PTraffic {
-			fmt.Println("❌ [Kali-Debug] 封包格式錯誤，不是 map[string]interface{}")
+			fmt.Println("[Kali-Debug] msg.Data is not a valid map[string]interface{}")
 		}
 		return
 	}
@@ -934,7 +1004,7 @@ func (h *Handler) handleTx(peer *Peer, msg *Message) {
 	txBase64Str, ok := dataMap["tx"].(string)
 	if !ok {
 		if h.debugP2PTraffic {
-			fmt.Println("❌ [Kali-Debug] 找不到 'tx' 欄位，或者它不是字串！")
+			fmt.Println("[Kali-Debug] received tx payload without a valid 'tx' field")
 		}
 		return
 	}
@@ -942,7 +1012,7 @@ func (h *Handler) handleTx(peer *Peer, msg *Message) {
 	txBytes, err := base64.StdEncoding.DecodeString(txBase64Str)
 	if err != nil {
 		if h.debugP2PTraffic {
-			fmt.Printf("❌ [Kali-Debug] Base64 解碼失敗！錯誤: %v\n", err)
+			fmt.Printf("[Kali-Debug] base64 decode error: %v\n", err)
 		}
 		return
 	}
@@ -950,7 +1020,7 @@ func (h *Handler) handleTx(peer *Peer, msg *Message) {
 	tx, err := blockchain.DeserializeTransaction(txBytes)
 	if err != nil {
 		if h.debugP2PTraffic {
-			fmt.Printf("❌ [Kali-Debug] 交易反序列化失敗！錯誤: %v\n", err)
+			fmt.Printf("[Kali-Debug] tx deserialize error: %v\n", err)
 		}
 		return
 	}
@@ -963,30 +1033,30 @@ func (h *Handler) handleTx(peer *Peer, msg *Message) {
 	}
 
 	if h.debugP2PTraffic {
-		fmt.Printf("✅ [Kali-Debug] 成功解析交易 %s，準備交給大門保全 (AddTx)...\n", tx.ID[:8])
+		fmt.Printf("[Kali-Debug] attempting to add tx %s from network into the mempool\n", tx.ID[:8])
 	}
 
 	if ok := h.Node.AddTx(*tx, peer.NodeID); !ok {
 		if h.debugP2PTraffic {
-			fmt.Printf("❌ [Kali-Debug] 交易 %s 被 Node.AddTx 拒絕！\n", tx.ID[:8])
+			fmt.Printf("[Kali-Debug] tx %s was rejected by Node.AddTx\n", tx.ID[:8])
 		}
 		return
 	}
 
-	fmt.Printf("📥 ✅ [P2P] 交易 %s 成功從網路進入 Mempool！\n", tx.ID[:8])
+	fmt.Printf("[P2P] accepted tx %s from the network and relaying its inventory\n", tx.ID[:8])
 
 	h.broadcastTxInv(tx.ID)
 }
 func (h *Handler) broadcastTxInv(txid string) {
 
 	if h.debugP2PTraffic {
-		fmt.Println("🕵️ [Debug] 進入 broadcastTxInv，準備廣播交易:", txid[:8])
+		fmt.Printf("[Debug] broadcastTxInv: %s\n", txid[:8])
 	}
 
 	if h.Node.SyncState != node.SyncSynced {
 
 		if h.debugP2PTraffic {
-			fmt.Printf("🚫 [Debug] 廣播被攔截！當前 SyncState 是 %v，不是 Synced!\n", h.Node.SyncState)
+			fmt.Printf("[Debug] broadcast deferred because sync state is %v, not Synced\n", h.Node.SyncState)
 		}
 		return
 	}
@@ -997,7 +1067,7 @@ func (h *Handler) broadcastTxInv(txid string) {
 	defer h.Network.mu.Unlock()
 
 	if h.debugP2PTraffic {
-		fmt.Printf("🕵️ [Debug] 網路中共有 %d 個鄰居，準備逐一檢查...\n", len(h.Network.Peers))
+		fmt.Printf("[Debug] broadcasting tx inventory to %d peers\n", len(h.Network.Peers))
 	}
 
 	invMsg := Message{
@@ -1025,10 +1095,10 @@ func (h *Handler) broadcastTxInv(txid string) {
 	}
 
 	if count > 0 {
-		fmt.Printf("📢 [P2P] 已向 %d 個鄰居廣播交易清單 (Inv): %s\n", count, txid[:8])
+		fmt.Printf("[P2P] broadcasted tx inventory to %d peers: %s\n", count, txid[:8])
 	} else if h.debugP2PTraffic {
-		// 🌟 顯影劑 4：鄰居都不理我？
-		fmt.Println("⚠️ [Debug] 廣播跑完了，但是 count 是 0！沒有符合條件的鄰居。")
+		// When count is zero, keep the debug output concise instead of logging every peer.
+		fmt.Println("[Debug] no active peers accepted the tx inventory broadcast")
 	}
 }
 
@@ -1038,12 +1108,12 @@ func (h *Handler) BroadcastLocalTx(tx blockchain.Transaction) {
 
 	log.Println("[P2P] broadcast local tx:", txid)
 
-	log.Println("📣 broadcast local tx:", txid)
+	log.Println("[P2P] broadcasting local tx:", txid)
 
 	if h.Node.SyncState != node.SyncSynced {
 		h.deferLocalTxBroadcast(txid)
 		log.Println("[P2P] local tx queued until sync completes:", txid)
-		log.Println("馃搶 [P2P] local tx queued until sync completes:", txid)
+		log.Println("[P2P] local tx queued until sync completes:", txid)
 		return
 	}
 
@@ -1078,7 +1148,7 @@ func (h *Handler) broadcastCurrentMempool() {
 	deferred := h.takeDeferredLocalTxs()
 	if len(deferred) > 0 {
 		fmt.Printf("[P2P] Sync finished, replaying %d deferred local txs...\n", len(deferred))
-		fmt.Printf("馃摙 [P2P] 鍚屾瀹屾垚寰岃寤ｆ挱寤舵尲鐨?%d 绛嗘湰鍦颁氦鏄?..\n", len(deferred))
+		fmt.Printf("[P2P] replaying %d deferred local txs after sync\n", len(deferred))
 		for _, txid := range deferred {
 			if !h.Node.Mempool.Has(txid) {
 				continue
@@ -1093,7 +1163,7 @@ func (h *Handler) broadcastCurrentMempool() {
 		return
 	}
 
-	fmt.Printf("📢 [P2P] 同步完成後補廣播目前 Mempool 的 %d 筆交易...\n", len(allTxs))
+	fmt.Printf("[P2P] broadcasting %d mempool txs\n", len(allTxs))
 	for txid := range allTxs {
 		if _, ok := broadcasted[txid]; ok {
 			continue
@@ -1105,7 +1175,7 @@ func (h *Handler) broadcastCurrentMempool() {
 func (h *Handler) handleGetHeaders(peer *Peer, msg *Message) {
 	var req GetHeadersPayload
 	if err := decode(msg.Data, &req); err != nil {
-		log.Println("❌ [Network] 解碼 GetHeaders 失敗 (請檢查結構體標籤):", err)
+		log.Println("[Network] decode GetHeaders error:", err)
 		return
 	}
 
@@ -1150,10 +1220,10 @@ func (h *Handler) handleHeaders(peer *Peer, msg *Message) {
 	}
 
 	headersCount := len(payload.Headers)
-	fmt.Printf("📥 [Sync] 收到 %d 個 Headers 來自 %s\n", headersCount, peer.Addr)
+	fmt.Printf("[Sync] received %d headers from %s\n", headersCount, peer.Addr)
 
 	if headersCount == 0 {
-		fmt.Println("✅ [Sync] 對方已無新 Headers。")
+		fmt.Println("[Sync] peer reported no more headers")
 		h.Node.Lock()
 		h.Node.HeadersSynced = true
 		needBodies := h.Node.HasMissingBodiesLocked()
@@ -1165,7 +1235,7 @@ func (h *Handler) handleHeaders(peer *Peer, msg *Message) {
 		} else {
 
 			if isSyncing && h.finishSyncing() {
-				fmt.Println("🎓 [Network] 鷹架與磚塊皆已完備，同步完成！請求 Mempool...")
+				fmt.Println("[Network] headers synced successfully; requesting mempool...")
 				h.requestMempool(peer)
 			}
 		}
@@ -1199,30 +1269,27 @@ func (h *Handler) handleHeaders(peer *Peer, msg *Message) {
 			continue
 		}
 
+		parent, ok := h.Node.Blocks[prevHash]
+		if !ok {
+			continue
+		}
+
+		expectedHeight := parent.Height + 1
+		if hdr.Height != expectedHeight {
+			log.Printf("[Security] rejected header %s from %s: invalid height %d (expected %d)", headerHash, peer.Addr, hdr.Height, expectedHeight)
+			continue
+		}
+
 		work := node.WorkFromTarget(target)
-		var (
-			parent  *node.BlockIndex
-			cumWork *big.Int
-		)
-		if hdr.Height == 0 {
-			cumWork = new(big.Int).Set(work)
-		} else {
-			var ok bool
-			parent, ok = h.Node.Blocks[prevHash]
-			if !ok {
-				continue
-			}
-			if parent.CumWorkInt != nil {
-				cumWork = new(big.Int).Add(new(big.Int).Set(parent.CumWorkInt), work)
-			} else {
-				cumWork = new(big.Int).Set(work)
-			}
+		cumWork := new(big.Int).Set(work)
+		if parent.CumWorkInt != nil {
+			cumWork = new(big.Int).Add(new(big.Int).Set(parent.CumWorkInt), work)
 		}
 
 		bi := &node.BlockIndex{
 			Hash:       headerHash,
 			PrevHash:   prevHash,
-			Height:     hdr.Height,
+			Height:     expectedHeight,
 			CumWork:    cumWork.Text(16),
 			Bits:       hdr.Bits,
 			Timestamp:  hdr.Timestamp,
@@ -1245,16 +1312,12 @@ func (h *Handler) handleHeaders(peer *Peer, msg *Message) {
 			}
 		}
 
-		if h.Node.Best == nil || h.Node.Best.CumWorkInt == nil || bi.CumWorkInt.Cmp(h.Node.Best.CumWorkInt) > 0 {
-			h.Node.Best = bi
-		}
-
 		addedCount++
 	}
 	h.Node.Unlock()
 
 	if addedCount == 0 {
-		fmt.Println("✅ [Sync] 收到的 Headers 皆為已知。")
+		fmt.Println("[Sync] no new headers were accepted from this batch")
 		h.Node.Lock()
 		h.Node.HeadersSynced = true
 		needBodies := h.Node.HasMissingBodiesLocked()
@@ -1264,7 +1327,7 @@ func (h *Handler) handleHeaders(peer *Peer, msg *Message) {
 			h.requestMissingBlockBodies(peer)
 		} else {
 			if isSyncing && h.finishSyncing() {
-				fmt.Println("🎓 [Network] 鷹架與磚塊皆已完備，同步完成！請求 Mempool...")
+				fmt.Println("[Network] headers synced successfully; requesting mempool...")
 				h.requestMempool(peer)
 			}
 		}
@@ -1272,7 +1335,7 @@ func (h *Handler) handleHeaders(peer *Peer, msg *Message) {
 	}
 
 	if headersCount >= 500 {
-		fmt.Println("🔄 [Sync] Headers 尚未收完，繼續請求下一批...")
+		fmt.Println("[Sync] header sync progress continues; requesting more headers...")
 		peer.Send(Message{
 			Type: MsgGetHeaders,
 			Data: GetHeadersPayload{Locators: h.buildBlockLocator()},
@@ -1280,7 +1343,7 @@ func (h *Handler) handleHeaders(peer *Peer, msg *Message) {
 		return
 	}
 
-	fmt.Printf("✅ [Sync] 成功新增 %d 個 Headers。鷹架搭建完畢，開始索取實體 (Bodies)...\n", addedCount)
+	fmt.Printf("[Sync] added %d new headers; transitioning to block body sync\n", addedCount)
 	h.Node.Lock()
 	h.Node.HeadersSynced = true
 	h.Node.Unlock()
@@ -1303,7 +1366,7 @@ func (h *Handler) requestMissingBlockBodies(peer *Peer) {
 			}
 		}
 		if requested > 0 {
-			fmt.Printf("📥 發現 %d 個缺塊，本輪新請求 %d 個...\n", len(missingBlocks), requested)
+			fmt.Printf("[Sync] identified %d missing blocks and requested %d bodies\n", len(missingBlocks), requested)
 		}
 		return
 	}
@@ -1361,7 +1424,7 @@ func (h *Handler) BroadcastNewBlock(b *blockchain.Block) {
 
 	dto := BlockToDTO(b, nil)
 
-	log.Printf("📣 [強力廣播] 準備發送區塊: 高度 %d, Hash %x", b.Height, b.Hash)
+	log.Printf("[Network] broadcasting new block: height %d, hash %x", b.Height, b.Hash)
 
 	h.Network.mu.Lock()
 	defer h.Network.mu.Unlock()
@@ -1371,7 +1434,7 @@ func (h *Handler) BroadcastNewBlock(b *blockchain.Block) {
 	h.pruneClosedPeersLocked()
 	for nodeID, p := range h.Network.Peers {
 
-		fmt.Printf("   -> 檢查 Peer %s [身分證: %d] (狀態: %d)\n", p.Addr, nodeID, p.State)
+		fmt.Printf("    -> [Network] checking peer %s [NodeID: %d] (State: %d)\n", p.Addr, nodeID, p.State)
 
 		if p != nil && p.IsActive() {
 			if !p.Send(Message{
@@ -1381,13 +1444,13 @@ func (h *Handler) BroadcastNewBlock(b *blockchain.Block) {
 				delete(h.Network.Peers, nodeID)
 				continue
 			}
-			fmt.Printf("   -> ✅ 已發送 MsgBlock 給 %s [身分證: %d]\n", p.Addr, nodeID)
+			fmt.Printf("    -> [Network] sent MsgBlock to %s [NodeID: %d]\n", p.Addr, nodeID)
 			activeCount++
 		}
 	}
 
 	if activeCount == 0 {
-		fmt.Println("⚠️ [警告] 廣播失敗：沒有任何活躍的 Peer (StateActive)！")
+		fmt.Println("[Warning] block broadcast skipped because there are no active peers")
 	}
 }
 
@@ -1415,7 +1478,7 @@ func (h *Handler) RequestHistoricalBlock(hashHex string) {
 	h.Network.mu.Lock()
 	defer h.Network.mu.Unlock()
 
-	fmt.Printf("🔍 [Query] 本地無區塊 %s，正在尋找全網的 archive 節點發出協尋...\n", hashHex[:8])
+	fmt.Printf("[Query] requesting historical block %s from archive peers...\n", hashHex[:8])
 
 	requestSent := false
 	h.pruneClosedPeersLocked()
@@ -1432,13 +1495,13 @@ func (h *Handler) RequestHistoricalBlock(hashHex string) {
 				delete(h.Network.Peers, nodeID)
 				continue
 			}
-			fmt.Printf("   -> 📡 已向全節點 %s 發送歷史區塊請求\n", p.Addr)
+			fmt.Printf("[Network] requested archive sync data from peer %s\\n", p.Addr)
 			requestSent = true
 		}
 	}
 
 	if !requestSent {
-		fmt.Println("⚠️ [警告] 網路上目前找不到任何 archive 全節點！歷史查詢失敗。")
+		fmt.Println("[Network] skipped archive sync request because no eligible outbound peer was available")
 	}
 }
 
